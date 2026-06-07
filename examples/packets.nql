@@ -1,0 +1,27 @@
+# nql parse examples/packets.nql
+
+schema Packet {
+  ts:    u64
+  src:   u32
+  dst:   u32
+  sport: u16
+  dport: u16
+  proto: u8
+  flags: u8
+  len:   u32
+}
+
+const TCP = 6;
+const SYN = 0x02;
+const ACK = 0x10;
+
+filter suspicious(p: Packet) {
+  (p.dport == 22 or p.dport == 23 or p.dport == 3389)
+    and p.proto == TCP
+    and p.len > 64
+}
+
+# bitwise ops bind tighter than comparisons here, unlike c
+filter syn_probe(p: Packet) {
+  p.flags & (SYN | ACK) == SYN and p.proto == TCP and p.dport < 1024
+}
