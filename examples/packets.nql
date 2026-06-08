@@ -2,8 +2,8 @@
 
 schema Packet {
   ts:    u64
-  src:   u32
-  dst:   u32
+  src:   ip4
+  dst:   ip4
   sport: u16
   dport: u16
   proto: u8
@@ -16,7 +16,7 @@ const SYN = 0x02;
 const ACK = 0x10;
 
 filter suspicious(p: Packet) {
-  (p.dport == 22 or p.dport == 23 or p.dport == 3389)
+  (p.dport in [22, 23, 3389, 4444] or p.dst in 185.0.0.0/8)
     and p.proto == TCP
     and p.len > 64
 }
@@ -24,4 +24,8 @@ filter suspicious(p: Packet) {
 # bitwise ops bind tighter than comparisons here, unlike c
 filter syn_probe(p: Packet) {
   p.flags & (SYN | ACK) == SYN and p.proto == TCP and p.dport < 1024
+}
+
+filter lan_egress(p: Packet) {
+  p.src in 10.0.0.0/8 and not (p.dst in 10.0.0.0/8) and p.len >= 1024
 }

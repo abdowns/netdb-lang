@@ -32,6 +32,9 @@ private:
   std::unordered_map<std::string, Token> consts_;
 
   const Token& cur() const { return toks_[pos_]; }
+  const Token& peek(size_t off = 1) const {
+    return toks_[std::min(pos_ + off, toks_.size() - 1)];
+  }
   bool at(Tok k) const { return cur().kind == k; }
   Token eat() { return toks_[pos_++]; }
   Token expect(Tok k, const char* what) {
@@ -75,14 +78,21 @@ private:
     expect(Tok::Assign, "after const name");
     bool neg = accept(Tok::Minus);
     Token val = eat();
-    if (val.kind == Tok::IntLit) {
-      if (neg) val.ival = -val.ival;
-    } else if (val.kind == Tok::FloatLit) {
-      if (neg) val.fval = -val.fval;
-    } else if (val.kind == Tok::StrLit || val.kind == Tok::KwTrue || val.kind == Tok::KwFalse) {
-      if (neg) fail(val.loc, "cannot negate this literal");
-    } else {
-      fail(val.loc, "const value must be a literal");
+    switch (val.kind) {
+      case Tok::IntLit:
+        if (neg) val.ival = -val.ival;
+        break;
+      case Tok::FloatLit:
+        if (neg) val.fval = -val.fval;
+        break;
+      case Tok::StrLit:
+      case Tok::IpLit:
+      case Tok::KwTrue:
+      case Tok::KwFalse:
+        if (neg) fail(val.loc, "cannot negate this literal");
+        break;
+      default:
+        fail(val.loc, "const value must be a literal");
     }
     consts_[name.text] = val;
     expect(Tok::Semi, "after const declaration");
@@ -147,6 +157,18 @@ private:
   ExprPtr parseComparison() {
     ExprPtr lhs = parseBitOr();
 
+    bool negated = false;
+    if (at(Tok::KwNot) && peek().kind == Tok::KwIn) {
+      eat();
+      negated = true;
+    }
+
+    if (at(Tok::KwIn)) {
+      SrcLoc loc = eat().loc;
+      return parseInRhs(loc, std::move(lhs), negated);
+    }
+    if (negated) fail(cur().loc, "expected 'in' after 'not'");
+
     if (at(Tok::KwContains) || at(Tok::KwStartswith) || at(Tok::KwEndswith) || at(Tok::KwMatches)) {
       Token op = eat();
       StrOpKind k = op.kind == Tok::KwContains     ? StrOpKind::Contains
@@ -168,6 +190,73 @@ private:
     }
     SrcLoc loc = eat().loc;
     return mk<BinaryExpr>(loc, op, std::move(lhs), parseBitOr());
+  }
+
+  ExprPtr parseInRhs(SrcLoc loc, ExprPtr subject, bool negated) {
+    if (at(Tok::LBracket)) {
+      eat();
+      auto e = std::make_unique<InListExpr>(std::move(subject));
+      e->loc = loc;
+      e->negated = negated;
+      if (!at(Tok::RBracket)) {
+        do {
+          e->elems.push_back(parseLiteral("list element"));
+        } while (accept(Tok::Comma));
+      }
+      expect(Tok::RBracket, "end of list");
+      if (e->elems.empty()) fail(loc, "'in []' with an empty list");
+      return e;
+    }
+    if (at(Tok::IpLit) || (at(Tok::Ident) && constKind(cur().text) == Tok::IpLit)) {
+      Token ip = eat();
+      if (ip.kind == Tok::Ident) ip = consts_.at(ip.text);
+      int prefix = 32;
+      if (accept(Tok::Slash)) {
+        Token p = expect(Tok::IntLit, "CIDR prefix length");
+        if (p.ival < 0 || p.ival > 32) fail(p.loc, "CIDR prefix must be 0..32");
+        prefix = (int)p.ival;
+      }
+      auto e = std::make_unique<InCidrExpr>(std::move(subject), ip.ip, prefix);
+      e->loc = loc;
+      e->negated = negated;
+      return e;
+    }
+    fail(cur().loc, "expected a list [...] or CIDR block after 'in'");
+  }
+
+  Tok constKind(const std::string& name) const {
+    auto it = consts_.find(name);
+    return it == consts_.end() ? Tok::Eof : it->second.kind;
+  }
+
+  // elements must be literals (or consts) so the jit can bake them in
+  ExprPtr parseLiteral(const char* what) {
+    bool neg = accept(Tok::Minus);
+    Token t = eat();
+    if (t.kind == Tok::Ident) {
+      auto it = consts_.find(t.text);
+      if (it == consts_.end())
+        fail(t.loc, std::string("expected a literal ") + what + " (or a const), got identifier '" + t.text + "'");
+      Token c = it->second;
+      c.loc = t.loc;
+      t = c;
+    }
+    switch (t.kind) {
+      case Tok::IntLit: return mk<IntLitExpr>(t.loc, neg ? -t.ival : t.ival);
+      case Tok::FloatLit: return mk<FloatLitExpr>(t.loc, neg ? -t.fval : t.fval);
+      case Tok::StrLit:
+        if (neg) fail(t.loc, "cannot negate a string");
+        return mk<StrLitExpr>(t.loc, t.text);
+      case Tok::IpLit:
+        if (neg) fail(t.loc, "cannot negate an IP");
+        return mk<IpLitExpr>(t.loc, t.ip);
+      case Tok::KwTrue:
+      case Tok::KwFalse:
+        if (neg) fail(t.loc, "cannot negate a bool literal");
+        return mk<BoolLitExpr>(t.loc, t.kind == Tok::KwTrue);
+      default:
+        fail(t.loc, std::string("expected a literal ") + what + ", got " + tokName(t.kind));
+    }
   }
 
   ExprPtr parseBitOr() {
@@ -258,6 +347,7 @@ private:
       case Tok::IntLit: eat(); return mk<IntLitExpr>(t.loc, t.ival);
       case Tok::FloatLit: eat(); return mk<FloatLitExpr>(t.loc, t.fval);
       case Tok::StrLit: eat(); return mk<StrLitExpr>(t.loc, t.text);
+      case Tok::IpLit: eat(); return mk<IpLitExpr>(t.loc, t.ip);
       case Tok::KwTrue: eat(); return mk<BoolLitExpr>(t.loc, true);
       case Tok::KwFalse: eat(); return mk<BoolLitExpr>(t.loc, false);
       case Tok::LParen: {
@@ -275,6 +365,7 @@ private:
             case Tok::IntLit: return mk<IntLitExpr>(t.loc, c.ival);
             case Tok::FloatLit: return mk<FloatLitExpr>(t.loc, c.fval);
             case Tok::StrLit: return mk<StrLitExpr>(t.loc, c.text);
+            case Tok::IpLit: return mk<IpLitExpr>(t.loc, c.ip);
             case Tok::KwTrue: return mk<BoolLitExpr>(t.loc, true);
             case Tok::KwFalse: return mk<BoolLitExpr>(t.loc, false);
             default: fail(t.loc, "bad const");
@@ -322,6 +413,7 @@ std::string exprToString(const Expr* e) {
     case ExprKind::FloatLit: return std::to_string(static_cast<const FloatLitExpr*>(e)->v);
     case ExprKind::StrLit: return "\"" + static_cast<const StrLitExpr*>(e)->v + "\"";
     case ExprKind::BoolLit: return static_cast<const BoolLitExpr*>(e)->v ? "true" : "false";
+    case ExprKind::IpLit: return ipToString(static_cast<const IpLitExpr*>(e)->addr);
     case ExprKind::Var: return static_cast<const VarExpr*>(e)->name;
     case ExprKind::Field: {
       auto* f = static_cast<const FieldExpr*>(e);
@@ -336,6 +428,20 @@ std::string exprToString(const Expr* e) {
       auto* b = static_cast<const BinaryExpr*>(e);
       return "(" + exprToString(b->lhs.get()) + " " + binOpName(b->op) + " " +
              exprToString(b->rhs.get()) + ")";
+    }
+    case ExprKind::InList: {
+      auto* i = static_cast<const InListExpr*>(e);
+      std::string s = "(" + exprToString(i->subject.get()) + (i->negated ? " not in [" : " in [");
+      for (size_t k = 0; k < i->elems.size(); k++) {
+        if (k) s += ", ";
+        s += exprToString(i->elems[k].get());
+      }
+      return s + "])";
+    }
+    case ExprKind::InCidr: {
+      auto* i = static_cast<const InCidrExpr*>(e);
+      return "(" + exprToString(i->subject.get()) + (i->negated ? " not in " : " in ") +
+             ipToString(i->net) + "/" + std::to_string(i->prefix) + ")";
     }
     case ExprKind::StrOp: {
       auto* s = static_cast<const StrOpExpr*>(e);

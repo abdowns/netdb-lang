@@ -15,7 +15,7 @@ const std::unordered_map<std::string_view, Tok> kKeywords = {
     {"asc", Tok::KwAsc},         {"desc", Tok::KwDesc},
     {"limit", Tok::KwLimit},     {"and", Tok::KwAnd},
     {"or", Tok::KwOr},           {"not", Tok::KwNot},
-    {"contains", Tok::KwContains},
+    {"in", Tok::KwIn},           {"contains", Tok::KwContains},
     {"startswith", Tok::KwStartswith},
     {"endswith", Tok::KwEndswith},
     {"matches", Tok::KwMatches},
@@ -90,6 +90,8 @@ private:
       case '}': t.kind = Tok::RBrace; return t;
       case '(': t.kind = Tok::LParen; return t;
       case ')': t.kind = Tok::RParen; return t;
+      case '[': t.kind = Tok::LBracket; return t;
+      case ']': t.kind = Tok::RBracket; return t;
       case ',': t.kind = Tok::Comma; return t;
       case ';': t.kind = Tok::Semi; return t;
       case ':': t.kind = Tok::Colon; return t;
@@ -140,7 +142,43 @@ private:
     return t;
   }
 
+  bool tryIp(Token& t) {
+    size_t save = pos_;
+    uint32_t saveLine = line_, saveCol = col_;
+    uint32_t octets[4];
+    for (int i = 0; i < 4; i++) {
+      if (!std::isdigit((unsigned char)peek())) goto nope;
+      {
+        uint32_t v = 0;
+        int digits = 0;
+        while (std::isdigit((unsigned char)peek()) && digits < 4) {
+          v = v * 10 + (advance() - '0');
+          digits++;
+        }
+        if (digits > 3 || v > 255) goto nope;
+        octets[i] = v;
+      }
+      if (i < 3) {
+        if (peek() != '.') goto nope;
+        advance();
+      }
+    }
+    if (peek() == '.' || std::isalnum((unsigned char)peek()) || peek() == '_') goto nope;
+    t.kind = Tok::IpLit;
+    t.ip = (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3];
+    return true;
+  nope:
+    pos_ = save;
+    line_ = saveLine;
+    col_ = saveCol;
+    return false;
+  }
+
   Token number(SrcLoc loc) {
+    Token t;
+    t.loc = loc;
+    if (tryIp(t)) return t;
+
     if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
       advance(); advance();
       uint64_t v = 0;
@@ -153,9 +191,7 @@ private:
                                                      : (std::tolower(c) - 'a') + 10);
       }
       if (!any) fail(loc, "malformed hex literal");
-      Token t;
       t.kind = Tok::IntLit;
-      t.loc = loc;
       t.ival = (int64_t)v;
       return t;
     }
@@ -167,9 +203,7 @@ private:
       v = v * 10 + (c - '0');
     }
 
-    Token t;
-    t.loc = loc;
-    if (peek() == '.') {
+    if (peek() == '.' && std::isdigit((unsigned char)peek(1))) {
       advance();
       double frac = 0, scale = 0.1;
       while (std::isdigit((unsigned char)peek())) {

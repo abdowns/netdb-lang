@@ -13,9 +13,9 @@ struct Expr;
 using ExprPtr = std::unique_ptr<Expr>;
 
 enum class ExprKind : uint8_t {
-  IntLit, FloatLit, StrLit, BoolLit,
+  IntLit, FloatLit, StrLit, BoolLit, IpLit,
   Field,
-  Unary, Binary, StrOp,
+  Unary, Binary, InList, InCidr, StrOp,
 };
 
 enum class UnOp : uint8_t { Not, Neg, BitNot };
@@ -57,6 +57,11 @@ struct BoolLitExpr : Expr {
   BoolLitExpr(bool v) : Expr(ExprKind::BoolLit), v(v) {}
 };
 
+struct IpLitExpr : Expr {
+  uint32_t addr; // host byte order, not network
+  IpLitExpr(uint32_t a) : Expr(ExprKind::IpLit), addr(a) {}
+};
+
 struct FieldExpr : Expr {
   std::string recName;
   std::string fieldName;
@@ -75,6 +80,22 @@ struct BinaryExpr : Expr {
   ExprPtr lhs, rhs;
   BinaryExpr(BinOp op, ExprPtr l, ExprPtr r)
       : Expr(ExprKind::Binary), op(op), lhs(std::move(l)), rhs(std::move(r)) {}
+};
+
+struct InListExpr : Expr {
+  ExprPtr subject;
+  std::vector<ExprPtr> elems;
+  bool negated = false;
+  InListExpr(ExprPtr s) : Expr(ExprKind::InList), subject(std::move(s)) {}
+};
+
+struct InCidrExpr : Expr {
+  ExprPtr subject;
+  uint32_t net;
+  uint32_t mask;
+  bool negated = false;
+  InCidrExpr(ExprPtr s, uint32_t net, uint32_t mask)
+      : Expr(ExprKind::InCidr), subject(std::move(s)), net(net), mask(mask) {}
 };
 
 struct StrOpExpr : Expr {

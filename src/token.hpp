@@ -12,14 +12,15 @@ enum class Tok : uint8_t {
   IntLit,
   FloatLit,
   StrLit,
+  IpLit,
 
   KwSchema, KwFilter, KwQuery, KwConst, KwLet, KwOver,
   KwWhere, KwSelect, KwOrder, KwBy, KwAsc, KwDesc, KwLimit,
-  KwAnd, KwOr, KwNot,
+  KwAnd, KwOr, KwNot, KwIn, KwBetween,
   KwContains, KwStartswith, KwEndswith, KwMatches,
   KwTrue, KwFalse,
 
-  LBrace, RBrace, LParen, RParen,
+  LBrace, RBrace, LParen, RParen, LBracket, RBracket,
   Comma, Semi, Colon, Dot, Arrow,
   Eq, Ne, Lt, Le, Gt, Ge,
   Plus, Minus, Star, Slash, Percent,
@@ -33,6 +34,7 @@ struct Token {
   std::string text;
   int64_t ival = 0;
   double fval = 0;
+  uint32_t ip = 0; // host byte order
 };
 
 inline const char* tokName(Tok t) {
@@ -42,6 +44,7 @@ inline const char* tokName(Tok t) {
     case Tok::IntLit: return "integer literal";
     case Tok::FloatLit: return "float literal";
     case Tok::StrLit: return "string literal";
+    case Tok::IpLit: return "IP literal";
     case Tok::KwSchema: return "'schema'";
     case Tok::KwFilter: return "'filter'";
     case Tok::KwQuery: return "'query'";
@@ -58,6 +61,8 @@ inline const char* tokName(Tok t) {
     case Tok::KwAnd: return "'and'";
     case Tok::KwOr: return "'or'";
     case Tok::KwNot: return "'not'";
+    case Tok::KwIn: return "'in'";
+    case Tok::KwBetween: return "'between'";
     case Tok::KwContains: return "'contains'";
     case Tok::KwStartswith: return "'startswith'";
     case Tok::KwEndswith: return "'endswith'";
@@ -68,6 +73,8 @@ inline const char* tokName(Tok t) {
     case Tok::RBrace: return "'}'";
     case Tok::LParen: return "'('";
     case Tok::RParen: return "')'";
+    case Tok::LBracket: return "'['";
+    case Tok::RBracket: return "']'";
     case Tok::Comma: return "','";
     case Tok::Semi: return "';'";
     case Tok::Colon: return "':'";
@@ -91,8 +98,8 @@ inline const char* tokName(Tok t) {
     case Tok::Shl: return "'<<'";
     case Tok::Shr: return "'>>'";
     case Tok::Assign: return "'='";
-    default: return "?";
   }
+  return "?";
 }
 
 } // namespace nql
