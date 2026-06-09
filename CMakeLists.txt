@@ -11,7 +11,8 @@ add_executable(nql
   src/lexer.cpp
   src/parser.cpp
   src/reflect.cpp
+  src/sema.cpp
   src/main.cpp
 )
 
-target_compile_options(nql PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(nql PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)

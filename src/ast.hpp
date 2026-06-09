@@ -6,6 +6,7 @@
 
 #include "diag.hpp"
 #include "reflect.hpp"
+#include "types.hpp"
 
 namespace nql {
 
@@ -32,6 +33,7 @@ enum class StrOpKind : uint8_t { Contains, StartsWith, EndsWith, Matches };
 struct Expr {
   ExprKind kind;
   SrcLoc loc;
+  Ty type = Ty::Invalid;
 
   explicit Expr(ExprKind k) : kind(k) {}
   virtual ~Expr() = default;
@@ -65,6 +67,7 @@ struct IpLitExpr : Expr {
 struct FieldExpr : Expr {
   std::string recName;
   std::string fieldName;
+  const FieldInfo* fi = nullptr;
   FieldExpr(std::string r, std::string f)
       : Expr(ExprKind::Field), recName(std::move(r)), fieldName(std::move(f)) {}
 };
@@ -92,10 +95,12 @@ struct InListExpr : Expr {
 struct InCidrExpr : Expr {
   ExprPtr subject;
   uint32_t net;
-  uint32_t mask;
+  int prefix;
   bool negated = false;
-  InCidrExpr(ExprPtr s, uint32_t net, uint32_t mask)
-      : Expr(ExprKind::InCidr), subject(std::move(s)), net(net), mask(mask) {}
+  InCidrExpr(ExprPtr s, uint32_t net, int prefix)
+      : Expr(ExprKind::InCidr), subject(std::move(s)), net(net), prefix(prefix) {}
+
+  uint32_t mask() const { return prefix == 0 ? 0u : ~0u << (32 - prefix); }
 };
 
 struct StrOpExpr : Expr {
@@ -109,21 +114,22 @@ struct FilterDecl {
   std::string name;
   std::string paramName;
   std::string schemaName;
+  const Schema* schema = nullptr;
   ExprPtr body;
   SrcLoc loc;
 };
 
 struct Program {
-  std::vector<Schema> schemas;
+  std::vector<std::unique_ptr<Schema>> schemas; // unique_ptr: Schema* stays stable on growth
   std::vector<FilterDecl> filters;
 
   const Schema* findSchema(const std::string& n) const {
     for (const auto& s : schemas)
-      if (s.name == n) return &s;
+      if (s->name == n) return s.get();
     return nullptr;
   }
 };
 
-std::string dumpExpr(const Expr* e, int indent = 0);
+std::string exprToString(const Expr* e);
 
 } // namespace nql
