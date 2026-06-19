@@ -10,7 +10,15 @@ class LLJIT;
 
 namespace nql {
 
-using PredFn = bool (*)(const void* record);
+struct CompiledPredicate {
+  using PredFn = bool (*)(const void* record);
+  using CountFn = uint64_t (*)(const void* base, uint64_t n);
+  using CollectFn = uint64_t (*)(const void* base, uint64_t n, uint64_t* outIdx, uint64_t cap);
+
+  PredFn pred = nullptr;
+  CountFn count = nullptr;
+  CollectFn collect = nullptr;
+};
 
 class Engine {
 public:
@@ -19,9 +27,13 @@ public:
 
   void compile(const Program& prog);
 
-  PredFn filter(const std::string& name);
+  CompiledPredicate filter(const std::string& name) { return predicate("f$" + name); }
+  CompiledPredicate query(const std::string& name) { return predicate("q$" + name); }
 
 private:
+  CompiledPredicate predicate(const std::string& sym);
+  void* lookup(const std::string& sym);
+
   std::unique_ptr<llvm::orc::LLJIT> jit_;
 };
 
