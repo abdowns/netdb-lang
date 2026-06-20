@@ -1,4 +1,4 @@
-# nql parse examples/packets.nql
+# nql run examples/packets.nql --n 100000
 
 schema Packet {
   ts:    u64
@@ -12,6 +12,7 @@ schema Packet {
 }
 
 const TCP = 6;
+const UDP = 17;
 const SYN = 0x02;
 const ACK = 0x10;
 
@@ -28,4 +29,17 @@ filter syn_probe(p: Packet) {
 
 filter lan_egress(p: Packet) {
   p.src in 10.0.0.0/8 and not (p.dst in 10.0.0.0/8) and p.len >= 1024
+}
+
+query rdp_targets over Packet {
+  where dport == 3389 and proto == TCP
+  select ts, src, dst, len
+  order by len desc
+  limit 10
+}
+
+query dns_chatter over Packet {
+  where proto == UDP and (dport == 53 or sport == 53)
+  select src, dst, len
+  limit 15
 }

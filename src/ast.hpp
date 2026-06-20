@@ -119,13 +119,39 @@ struct FilterDecl {
   SrcLoc loc;
 };
 
+// only `where` compiles; select/order/limit run via reflection at runtime
+struct QueryDecl {
+  std::string name;
+  std::string schemaName;
+  const Schema* schema = nullptr;
+  ExprPtr where; // null means match everything
+  std::vector<std::string> selectFields;
+  std::vector<const FieldInfo*> selectInfo;
+  std::string orderField;
+  const FieldInfo* orderInfo = nullptr;
+  bool orderDesc = false;
+  int64_t limit = -1;
+  SrcLoc loc;
+};
+
 struct Program {
   std::vector<std::unique_ptr<Schema>> schemas; // unique_ptr: Schema* stays stable on growth
   std::vector<FilterDecl> filters;
+  std::vector<QueryDecl> queries;
 
-  const Schema* findSchema(const std::string& n) const {
+  const Schema* findSchema(std::string_view n) const {
     for (const auto& s : schemas)
       if (s->name == n) return s.get();
+    return nullptr;
+  }
+  FilterDecl* findFilter(std::string_view n) {
+    for (auto& f : filters)
+      if (f.name == n) return &f;
+    return nullptr;
+  }
+  QueryDecl* findQuery(std::string_view n) {
+    for (auto& q : queries)
+      if (q.name == n) return &q;
     return nullptr;
   }
 };

@@ -15,13 +15,11 @@ public:
   Program run() {
     Program prog;
     while (!at(Tok::Eof)) {
-      switch (cur().kind) {
-        case Tok::KwSchema: parseSchema(prog); break;
-        case Tok::KwConst: parseConst(); break;
-        case Tok::KwFilter: parseFilter(prog); break;
-        default:
-          fail(cur().loc, std::string("expected 'schema', 'const' or 'filter', got ") + tokName(cur().kind));
-      }
+      if (at(Tok::KwSchema)) parseSchema(prog);
+      else if (at(Tok::KwConst)) parseConst();
+      else if (at(Tok::KwFilter)) parseFilter(prog);
+      else if (at(Tok::KwQuery)) parseQuery(prog);
+      else fail(cur().loc, std::string("expected 'schema', 'const', 'filter' or 'query', got ") + tokName(cur().kind));
     }
     return prog;
   }
@@ -117,6 +115,44 @@ private:
     f.body = parseExpr();
     expect(Tok::RBrace, "end of filter body");
     prog.filters.push_back(std::move(f));
+  }
+
+  void parseQuery(Program& prog) {
+    eat();
+    QueryDecl q;
+    Token name = expect(Tok::Ident, "query name");
+    q.name = name.text;
+    q.loc = name.loc;
+    expect(Tok::KwOver, "after query name");
+    q.schemaName = expect(Tok::Ident, "schema name").text;
+    expect(Tok::LBrace, "query body");
+    while (!at(Tok::RBrace)) {
+      if (accept(Tok::KwWhere)) {
+        if (q.where) fail(cur().loc, "duplicate 'where' clause");
+        q.where = parseExpr();
+      } else if (accept(Tok::KwSelect)) {
+        if (!q.selectFields.empty()) fail(cur().loc, "duplicate 'select' clause");
+        do {
+          q.selectFields.push_back(expect(Tok::Ident, "field name").text);
+        } while (accept(Tok::Comma));
+      } else if (accept(Tok::KwOrder)) {
+        if (!q.orderField.empty()) fail(cur().loc, "duplicate 'order by' clause");
+        expect(Tok::KwBy, "after 'order'");
+        q.orderField = expect(Tok::Ident, "field name").text;
+        if (accept(Tok::KwDesc)) q.orderDesc = true;
+        else accept(Tok::KwAsc);
+      } else if (accept(Tok::KwLimit)) {
+        if (q.limit >= 0) fail(cur().loc, "duplicate 'limit' clause");
+        Token n = expect(Tok::IntLit, "limit count");
+        if (n.ival < 0) fail(n.loc, "limit must be non-negative");
+        q.limit = n.ival;
+      } else {
+        fail(cur().loc, std::string("expected 'where', 'select', 'order by' or 'limit', got ") + tokName(cur().kind));
+      }
+      accept(Tok::Semi);
+    }
+    eat();
+    prog.queries.push_back(std::move(q));
   }
 
   ExprPtr parseExpr() { return parseOr(); }
@@ -417,7 +453,7 @@ std::string exprToString(const Expr* e) {
     case ExprKind::Var: return static_cast<const VarExpr*>(e)->name;
     case ExprKind::Field: {
       auto* f = static_cast<const FieldExpr*>(e);
-      return f->recName + "." + f->fieldName;
+      return f->recName.empty() ? f->fieldName : f->recName + "." + f->fieldName;
     }
     case ExprKind::Unary: {
       auto* u = static_cast<const UnaryExpr*>(e);

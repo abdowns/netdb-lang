@@ -15,20 +15,47 @@ public:
 
   void run() {
     for (auto& f : prog_.filters) checkFilter(f);
+    for (auto& q : prog_.queries) checkQuery(q);
   }
 
 private:
   Program& prog_;
 
+  const Schema* resolveSchema(const std::string& name, SrcLoc loc) {
+    const Schema* s = prog_.findSchema(name);
+    if (!s) fail(loc, "unknown schema '" + name + "'");
+    return s;
+  }
+
   void checkFilter(FilterDecl& f) {
-    f.schema = prog_.findSchema(f.schemaName);
-    if (!f.schema) fail(f.loc, "unknown schema '" + f.schemaName + "'");
+    f.schema = resolveSchema(f.schemaName, f.loc);
     Scope scope;
     scope.schema = f.schema;
     scope.paramName = f.paramName;
     Ty t = check(f.body, scope);
     if (t != Ty::Bool)
       fail(f.body->loc, "filter '" + f.name + "' body must be bool, got " + std::string(tyName(t)));
+  }
+
+  void checkQuery(QueryDecl& q) {
+    q.schema = resolveSchema(q.schemaName, q.loc);
+    Scope scope;
+    scope.schema = q.schema;
+    if (q.where) {
+      Ty t = check(q.where, scope);
+      if (t != Ty::Bool)
+        fail(q.where->loc, "'where' clause must be bool, got " + std::string(tyName(t)));
+    }
+    for (const auto& name : q.selectFields) {
+      const FieldInfo* fi = q.schema->field(name);
+      if (!fi) fail(q.loc, "select: no field '" + name + "' in schema " + q.schema->name);
+      q.selectInfo.push_back(fi);
+    }
+    if (!q.orderField.empty()) {
+      q.orderInfo = q.schema->field(q.orderField);
+      if (!q.orderInfo)
+        fail(q.loc, "order by: no field '" + q.orderField + "' in schema " + q.schema->name);
+    }
   }
 
   Ty check(ExprPtr& e, const Scope& scope) {
@@ -113,25 +140,29 @@ private:
           case BinOp::Sub:
           case BinOp::Mul:
           case BinOp::Div:
-          case BinOp::Mod:
+          case BinOp::Mod: {
             if (!isNumericTy(lt) || !isNumericTy(rt))
               fail(e->loc, std::string("arithmetic needs numbers, got ") + tyName(lt) + " and " +
                                tyName(rt));
-            if (lt == Ty::F64 || rt == Ty::F64) {
+            Promo p = promote(lt, rt);
+            if (p.isFloat) {
               if (b->op == BinOp::Mod) fail(e->loc, "'%' is not defined for f64");
               return Ty::F64;
             }
-            return Ty::I64;
+            return p.isUnsigned ? Ty::U64 : Ty::I64;
+          }
 
           case BinOp::BitAnd:
           case BinOp::BitOr:
           case BinOp::BitXor:
           case BinOp::Shl:
-          case BinOp::Shr:
+          case BinOp::Shr: {
             if (!isIntTy(lt) || !isIntTy(rt))
               fail(e->loc, std::string("bitwise ops need integers, got ") + tyName(lt) + " and " +
                                tyName(rt));
-            return Ty::I64;
+            Promo p = promote(lt, rt);
+            return p.isUnsigned ? Ty::U64 : Ty::I64;
+          }
         }
         return Ty::Invalid;
       }
