@@ -1,5 +1,6 @@
 #include "jit.hpp"
 
+#include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -8,6 +9,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "codegen.hpp"
+#include "rt.hpp"
 
 namespace nql {
 
@@ -40,6 +42,19 @@ Engine::Engine() {
   InitializeNativeTargetAsmPrinter();
 
   jit_ = orDie(LLJITBuilder().create(), "failed to create JIT");
+
+  SymbolMap syms;
+  auto addSym = [&](const char* name, auto* fn) {
+    syms[jit_->mangleAndIntern(name)] = ExecutorSymbolDef(
+        ExecutorAddr::fromPtr(fn), JITSymbolFlags::Exported | JITSymbolFlags::Callable);
+  };
+  addSym("nql_str_eq", &nql_str_eq);
+  addSym("nql_str_contains", &nql_str_contains);
+  addSym("nql_str_starts", &nql_str_starts);
+  addSym("nql_str_ends", &nql_str_ends);
+  addSym("nql_str_glob", &nql_str_glob);
+  if (auto err = jit_->getMainJITDylib().define(absoluteSymbols(std::move(syms))))
+    fail("failed to register runtime symbols: " + toString(std::move(err)));
 }
 
 Engine::~Engine() = default;
