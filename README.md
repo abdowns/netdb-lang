@@ -1,8 +1,12 @@
 # nql
 
-A small query language for filtering structured records
-(packets, logs, table rows). Implemented in C++ and LLVM.
+A small JIT-compiled query language for filtering and querying structured records
+(packets, logs, table rows). Predicates are compiled to native code with
+LLVM at runtime. Implemented in C++ and LLVM.
 
-Examples are in the examples/ directory.
+Examples are in the examples/ directory (packets.nql, weblog.nql).
 
-Build: `cmake -B build && cmake --build build`
+Build with CMake:
+
+    cmake -B build && cmake --build build
+    ./build/nql run examples/weblog.nql --data examples/data/weblog.csv

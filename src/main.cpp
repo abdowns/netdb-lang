@@ -22,6 +22,7 @@ namespace {
 struct Args {
   std::string command;
   std::string file;
+  std::string dataPath;
   std::string filterName;
   std::string queryName;
   OutFormat out = OutFormat::Table;
@@ -39,7 +40,8 @@ struct Args {
       "  nql run <file.nql> [options]   compile and execute queries/filters\n"
       "\n"
       "run options:\n"
-      "  --n <count>         synthesize this many records (default 20000)\n"
+      "  --data <file.csv>   load records from CSV (columns matched to schema by name)\n"
+      "  --n <count>         synthesize this many records when no --data (default 20000)\n"
       "  --filter <name>     run one filter (default: all queries, else all filters)\n"
       "  --query <name>      run one query\n"
       "  --out json|csv|table  output format (default table)\n"
@@ -108,6 +110,32 @@ void sortByField(std::vector<uint64_t>& idx, const RecordSet& rs, const FieldInf
   std::stable_sort(idx.begin(), idx.end(), less);
 }
 
+class DataSource {
+public:
+  DataSource(const Args& args) : args_(args) {}
+
+  RecordSet& get(const Schema& schema) {
+    auto it = sets_.find(schema.name);
+    if (it != sets_.end()) return *it->second;
+    auto t0 = std::chrono::steady_clock::now();
+    std::unique_ptr<RecordSet> rs;
+    if (!args_.dataPath.empty()) {
+      rs = std::make_unique<RecordSet>(loadCsv(schema, args_.dataPath));
+      std::cerr << "loaded " << rs->count() << " " << schema.name << " records from "
+                << args_.dataPath << " (" << msSince(t0) << " ms)\n";
+    } else {
+      rs = std::make_unique<RecordSet>(synthesize(schema, args_.n, args_.seed));
+      std::cerr << "synthesized " << rs->count() << " " << schema.name << " records (seed "
+                << args_.seed << ")\n";
+    }
+    return *sets_.emplace(schema.name, std::move(rs)).first->second;
+  }
+
+private:
+  const Args& args_;
+  std::map<std::string, std::unique_ptr<RecordSet>> sets_;
+};
+
 void execute(const std::string& title, const RecordSet& rs, CompiledPredicate cp,
              const std::vector<const FieldInfo*>& select, const FieldInfo* orderBy,
              bool orderDesc, int64_t limit, OutFormat fmt) {
@@ -141,26 +169,18 @@ int cmdRun(const Args& args) {
   std::cerr << "JIT compiled " << prog.filters.size() << " filter(s) and "
             << prog.queries.size() << " query(ies) in " << msSince(t0) << " ms\n";
 
-  std::map<std::string, RecordSet> sets;
-  auto dataFor = [&](const Schema& schema) -> RecordSet& {
-    auto it = sets.find(schema.name);
-    if (it != sets.end()) return it->second;
-    RecordSet rs = synthesize(schema, args.n, args.seed);
-    std::cerr << "synthesized " << rs.count() << " " << schema.name << " records (seed "
-              << args.seed << ")\n";
-    return sets.emplace(schema.name, std::move(rs)).first->second;
-  };
+  DataSource data(args);
   static const std::vector<const FieldInfo*> kAllFields;
   static const std::vector<LetStmt> kNoLets;
 
   auto runFilter = [&](const FilterDecl& f) {
-    RecordSet& rs = dataFor(*f.schema);
+    RecordSet& rs = data.get(*f.schema);
     CompiledPredicate cp = engine.filter(f.name);
     if (!args.noVerify) crossCheck(("filter " + f.name).c_str(), f.body.get(), f.lets, cp, rs);
     execute("filter " + f.name, rs, cp, kAllFields, nullptr, false, args.limit, args.out);
   };
   auto runQuery = [&](const QueryDecl& q) {
-    RecordSet& rs = dataFor(*q.schema);
+    RecordSet& rs = data.get(*q.schema);
     CompiledPredicate cp; // null when there is no where clause
     if (q.where) {
       cp = engine.query(q.name);
@@ -203,7 +223,8 @@ Args parseArgs(int argc, char** argv) {
       if (i + 1 >= argc) fail("missing value for " + arg);
       return argv[++i];
     };
-    if (arg == "--filter") a.filterName = value();
+    if (arg == "--data") a.dataPath = value();
+    else if (arg == "--filter") a.filterName = value();
     else if (arg == "--query") a.queryName = value();
     else if (arg == "--limit") a.limit = std::stoll(value());
     else if (arg == "--n") a.n = std::stoull(value());

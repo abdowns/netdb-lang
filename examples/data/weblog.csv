@@ -1,0 +1,37 @@
+ts,client,method,path,status,bytes,ms,user,agent
+1735732800000,203.0.113.10,GET,/index.html,200,5324,12.4,,Mozilla/5.0
+1735732801200,203.0.113.10,GET,/static/app.js,200,102400,8.1,,Mozilla/5.0
+1735732802500,198.51.100.7,POST,/login,401,512,45.0,alice,Mozilla/5.0
+1735732803100,198.51.100.7,POST,/login,401,512,44.2,alice,Mozilla/5.0
+1735732804000,198.51.100.7,POST,/login,200,1024,52.7,alice,Mozilla/5.0
+1735732805300,192.0.2.44,GET,/api/v1/users,200,20480,310.5,bob,curl/8.4
+1735732806000,192.0.2.44,GET,/api/v1/orders,200,40960,890.2,bob,curl/8.4
+1735732807800,192.0.2.44,GET,/api/v1/orders?page=2,200,38912,1204.9,bob,curl/8.4
+1735732808900,203.0.113.99,GET,/wp-login.php,404,320,3.2,,sqlmap/1.7
+1735732809100,203.0.113.99,GET,/wp-admin/setup.php,404,320,2.9,,sqlmap/1.7
+1735732809500,203.0.113.99,GET,/.env,403,128,1.7,,sqlmap/1.7
+1735732810000,203.0.113.99,GET,/admin/panel,403,256,2.2,,sqlmap/1.7
+1735732811000,203.0.113.99,GET,"/search?q=1,2,union select",500,890,120.0,,sqlmap/1.7
+1735732812400,10.0.4.17,GET,/api/v1/health,200,64,1.1,svc_monitor,kube-probe/1.29
+1735732813000,10.0.4.17,GET,/api/v1/health,200,64,0.9,svc_monitor,kube-probe/1.29
+1735732814600,172.16.9.30,GET,/reports/annual.pdf,200,734003,220.0,carol,Mozilla/5.0
+1735732815200,172.16.9.30,GET,/exports/full_dump.csv,200,2097152,1830.4,carol,Mozilla/5.0
+1735732816000,198.51.100.23,PUT,/api/v1/users/42,200,2048,95.3,dave,python-requests/2.31
+1735732817000,198.51.100.23,DELETE,/api/v1/users/43,500,650,410.8,dave,python-requests/2.31
+1735732818000,198.51.100.23,DELETE,/api/v1/users/43,500,650,388.6,dave,python-requests/2.31
+1735732819500,203.0.113.10,GET,/images/logo.png,304,0,2.0,,Mozilla/5.0
+1735732820000,192.0.2.71,POST,/api/v2/metrics,200,512,140.0,svc_agent,Go-http-client/2.0
+1735732821000,192.0.2.71,POST,/api/v2/metrics,200,512,2405.7,svc_agent,Go-http-client/2.0
+1735732822000,203.0.113.55,GET,/checkout,200,15360,88.8,eve,Mozilla/5.0
+1735732823000,203.0.113.55,POST,/checkout,302,256,164.2,eve,Mozilla/5.0
+1735732824000,203.0.113.55,GET,/cart,200,9216,41.0,eve,Mozilla/5.0
+1735732825000,198.51.100.99,POST,/api/v1/auth/token,401,384,61.5,mallory,curl/8.4
+1735732826000,198.51.100.99,POST,/api/v1/auth/token,401,384,58.9,mallory,curl/8.4
+1735732827000,198.51.100.99,POST,/api/v1/auth/token,429,128,12.0,mallory,curl/8.4
+1735732828000,10.0.7.2,GET,/feed.xml,200,28672,17.6,,Go-http-client/2.0
+1735732829000,203.0.113.180,GET,/admin/users?id=1;drop table users,403,256,3.4,,curl/8.4
+1735732830000,203.0.113.180,GET,/backup/.env.bak,404,320,2.1,,curl/8.4
+1735732831000,172.16.3.9,GET,/videos/onboarding.mp4,200,10485760,3210.0,trent,Mozilla/5.0
+1735732832000,192.0.2.130,GET,/api/v1/search?q=latency,200,8192,275.4,peggy,Mozilla/5.0
+1735732833000,192.0.2.130,GET,/old/index.php,404,320,4.4,peggy,Mozilla/5.0
+1735732834000,10.0.4.17,GET,/api/v1/health,503,64,5000.0,svc_monitor,kube-probe/1.29

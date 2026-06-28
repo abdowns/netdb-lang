@@ -1,0 +1,36 @@
+# nql run examples/weblog.nql --data examples/data/weblog.csv
+
+schema LogEntry {
+  ts:     u64
+  client: ip4
+  method: str
+  path:   str
+  status: u16
+  bytes:  u32
+  ms:     f64
+  agent:  str
+}
+
+filter attack_surface(e: LogEntry) {
+  e.path contains "/admin"
+    or e.path startswith "/wp-"
+    or e.agent contains "sqlmap"
+}
+
+filter errors(e: LogEntry) {
+  e.status >= 500
+}
+
+query slow_api over LogEntry {
+  where path startswith "/api/" and ms > 250.0
+  select ts, method, path, status, ms
+  order by ms desc
+  limit 10
+}
+
+query big_responses over LogEntry {
+  where bytes > 512000
+  select ts, path, bytes
+  order by bytes desc
+  limit 5
+}

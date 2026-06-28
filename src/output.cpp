@@ -11,7 +11,11 @@ namespace {
 std::string fieldToString(const uint8_t* rec, const FieldInfo& f) {
   switch (f.ty) {
     case Ty::Bool: return loadUInt(rec, f) ? "true" : "false";
-    case Ty::F64: return std::to_string(loadF64(rec, f));
+    case Ty::F64: {
+      char buf[32];
+      snprintf(buf, sizeof buf, "%g", loadF64(rec, f));
+      return buf;
+    }
     case Ty::Str: {
       StrRef s = loadStr(rec, f);
       return std::string(s.ptr, s.len);
@@ -23,6 +27,48 @@ std::string fieldToString(const uint8_t* rec, const FieldInfo& f) {
   }
 }
 
+void jsonEscape(std::ostream& os, const char* p, uint64_t n) {
+  os << '"';
+  for (uint64_t i = 0; i < n; i++) {
+    char c = p[i];
+    switch (c) {
+      case '"': os << "\\\""; break;
+      case '\\': os << "\\\\"; break;
+      case '\n': os << "\\n"; break;
+      case '\t': os << "\\t"; break;
+      case '\r': os << "\\r"; break;
+      default:
+        if ((unsigned char)c < 0x20) {
+          char buf[8];
+          snprintf(buf, sizeof buf, "\\u%04x", c);
+          os << buf;
+        } else {
+          os << c;
+        }
+    }
+  }
+  os << '"';
+}
+
+void csvEscape(std::ostream& os, const std::string& s) {
+  if (s.find_first_of(",\"\n") == std::string::npos) {
+    os << s;
+    return;
+  }
+  os << '"';
+  for (char c : s) {
+    if (c == '"') os << "\"\"";
+    else os << c;
+  }
+  os << '"';
+}
+
+std::vector<const FieldInfo*> allFields(const Schema& s) {
+  std::vector<const FieldInfo*> out;
+  for (const auto& f : s.fields) out.push_back(&f);
+  return out;
+}
+
 } // namespace
 
 void writeJsonRecord(std::ostream& os, const uint8_t* rec,
@@ -32,19 +78,23 @@ void writeJsonRecord(std::ostream& os, const uint8_t* rec,
     const FieldInfo& f = *fields[i];
     if (i) os << ", ";
     os << '"' << f.name << "\": ";
-    if (f.ty == Ty::Str || f.ty == Ty::IP4)
-      os << '"' << fieldToString(rec, f) << '"';
-    else
-      os << fieldToString(rec, f);
+    switch (f.ty) {
+      case Ty::Str: {
+        StrRef s = loadStr(rec, f);
+        jsonEscape(os, s.ptr, s.len);
+        break;
+      }
+      case Ty::IP4: os << '"' << ipToString((uint32_t)loadUInt(rec, f)) << '"'; break;
+      default: os << fieldToString(rec, f);
+    }
   }
   os << "}\n";
 }
 
 void writeRecords(std::ostream& os, const RecordSet& rs, const std::vector<uint64_t>& indices,
                   const std::vector<const FieldInfo*>& fieldsIn, OutFormat fmt) {
-  std::vector<const FieldInfo*> fields = fieldsIn;
-  if (fields.empty())
-    for (const auto& f : rs.schema().fields) fields.push_back(&f);
+  std::vector<const FieldInfo*> fields =
+      fieldsIn.empty() ? allFields(rs.schema()) : fieldsIn;
 
   switch (fmt) {
     case OutFormat::Json:
@@ -61,7 +111,7 @@ void writeRecords(std::ostream& os, const RecordSet& rs, const std::vector<uint6
         const uint8_t* rec = rs.at(idx);
         for (size_t i = 0; i < fields.size(); i++) {
           if (i) os << ',';
-          os << fieldToString(rec, *fields[i]);
+          csvEscape(os, fieldToString(rec, *fields[i]));
         }
         os << '\n';
       }
@@ -79,6 +129,7 @@ void writeRecords(std::ostream& os, const RecordSet& rs, const std::vector<uint6
         std::vector<std::string> row;
         for (size_t i = 0; i < fields.size(); i++) {
           row.push_back(fieldToString(rec, *fields[i]));
+          if (row.back().size() > 40) row.back() = row.back().substr(0, 37) + "...";
           width[i] = std::max(width[i], row.back().size());
         }
         rows.push_back(std::move(row));
