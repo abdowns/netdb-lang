@@ -18,6 +18,7 @@ add_executable(nql
   src/parser.cpp
   src/reflect.cpp
   src/sema.cpp
+  src/planner.cpp
   src/interp.cpp
   src/codegen.cpp
   src/jit.cpp
@@ -31,5 +32,5 @@ target_include_directories(nql SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(nql PRIVATE ${LLVM_DEFINITIONS_LIST})
 target_compile_options(nql PRIVATE -Wall -Wextra)
 
-llvm_map_components_to_libnames(llvm_libs core support orcjit native)
+llvm_map_components_to_libnames(llvm_libs core support orcjit native passes)
 target_link_libraries(nql PRIVATE ${llvm_libs})

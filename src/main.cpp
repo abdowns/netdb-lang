@@ -13,6 +13,7 @@
 #include "jit.hpp"
 #include "output.hpp"
 #include "parser.hpp"
+#include "planner.hpp"
 #include "sema.hpp"
 
 using namespace nql;
@@ -63,6 +64,7 @@ Program loadProgram(const std::string& path) {
   ss << in.rdbuf();
   Program prog = parse(ss.str());
   analyze(prog);
+  plan(prog);
   return prog;
 }
 
@@ -140,14 +142,24 @@ void execute(const std::string& title, const RecordSet& rs, CompiledPredicate cp
              const std::vector<const FieldInfo*>& select, const FieldInfo* orderBy,
              bool orderDesc, int64_t limit, OutFormat fmt) {
   size_t n = rs.count();
-  std::vector<uint64_t> idx(n);
-  auto t0 = std::chrono::steady_clock::now();
+  std::vector<uint64_t> idx;
+  double queryMs;
+
   if (cp.collect) {
-    idx.resize(cp.collect(rs.data(), n, idx.data(), n));
+    // an order by needs all matches before sorting; else the kernel stops at limit
+    uint64_t cap = (orderBy || limit < 0) ? n : std::min<uint64_t>(limit, n);
+    idx.resize(cap);
+    auto t0 = std::chrono::steady_clock::now();
+    uint64_t cnt = cp.collect(rs.data(), n, idx.data(), cap);
+    queryMs = msSince(t0);
+    idx.resize(cnt);
   } else {
-    for (size_t i = 0; i < n; i++) idx[i] = i;
+    auto t0 = std::chrono::steady_clock::now();
+    size_t take = (orderBy || limit < 0) ? n : std::min<size_t>(limit, n);
+    idx.resize(take);
+    for (size_t i = 0; i < take; i++) idx[i] = i;
+    queryMs = msSince(t0);
   }
-  double queryMs = msSince(t0);
 
   if (orderBy) sortByField(idx, rs, *orderBy, orderDesc);
   if (limit >= 0 && idx.size() > (size_t)limit) idx.resize(limit);
@@ -187,13 +199,10 @@ int cmdRun(const Args& args) {
       if (!args.noVerify)
         crossCheck(("query " + q.name).c_str(), q.where.get(), kNoLets, cp, rs);
     }
-    std::vector<const FieldInfo*> select;
-    for (const auto& name : q.selectFields) select.push_back(q.schema->field(name));
-    const FieldInfo* orderBy = q.orderField.empty() ? nullptr : q.schema->field(q.orderField);
     int64_t limit = args.limit >= 0 ? std::min<int64_t>(args.limit < 0 ? INT64_MAX : args.limit,
                                                         q.limit < 0 ? INT64_MAX : q.limit)
                                     : q.limit;
-    execute("query " + q.name, rs, cp, select, orderBy, q.orderDesc, limit, args.out);
+    execute("query " + q.name, rs, cp, q.selectInfo, q.orderInfo, q.orderDesc, limit, args.out);
   };
 
   if (!args.filterName.empty()) {
