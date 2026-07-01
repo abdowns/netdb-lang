@@ -1,5 +1,7 @@
 #include "planner.hpp"
 
+#include <algorithm>
+
 namespace nql {
 namespace {
 
@@ -83,10 +85,15 @@ void fold(ExprPtr& e) {
   if (e->kind != ExprKind::Binary) return;
   auto* bin = static_cast<BinaryExpr*>(e.get());
 
-  bool lb, rb;
-  if (isBoolLit(bin->lhs.get(), lb) && isBoolLit(bin->rhs.get(), rb)) {
-    if (bin->op == BinOp::And) { e = boolLit(lb && rb, e->loc); return; }
-    if (bin->op == BinOp::Or) { e = boolLit(lb || rb, e->loc); return; }
+  bool bv;
+  if (bin->op == BinOp::And) {
+    if (isBoolLit(bin->lhs.get(), bv)) { e = bv ? std::move(bin->rhs) : boolLit(false, e->loc); return; }
+    if (isBoolLit(bin->rhs.get(), bv)) { e = bv ? std::move(bin->lhs) : boolLit(false, e->loc); return; }
+    return;
+  }
+  if (bin->op == BinOp::Or) {
+    if (isBoolLit(bin->lhs.get(), bv)) { e = bv ? boolLit(true, e->loc) : std::move(bin->rhs); return; }
+    if (isBoolLit(bin->rhs.get(), bv)) { e = bv ? boolLit(true, e->loc) : std::move(bin->lhs); return; }
     return;
   }
 
@@ -137,15 +144,100 @@ void fold(ExprPtr& e) {
   }
 }
 
+void flattenAnd(ExprPtr e, std::vector<ExprPtr>& out) {
+  if (e->kind == ExprKind::Binary) {
+    auto* b = static_cast<BinaryExpr*>(e.get());
+    if (b->op == BinOp::And) {
+      flattenAnd(std::move(b->lhs), out);
+      flattenAnd(std::move(b->rhs), out);
+      return;
+    }
+  }
+  out.push_back(std::move(e));
+}
+
+void reorderConjuncts(ExprPtr& e) {
+  if (e->kind != ExprKind::Binary ||
+      static_cast<BinaryExpr*>(e.get())->op != BinOp::And)
+    return;
+
+  std::vector<ExprPtr> conjuncts;
+  flattenAnd(std::move(e), conjuncts);
+
+  std::stable_sort(conjuncts.begin(), conjuncts.end(),
+                   [](const ExprPtr& a, const ExprPtr& b) {
+                     return exprCost(a.get()) < exprCost(b.get());
+                   });
+
+  ExprPtr acc = std::move(conjuncts.back());
+  for (size_t i = conjuncts.size() - 1; i-- > 0;) {
+    SrcLoc loc = conjuncts[i]->loc;
+    auto b = std::make_unique<BinaryExpr>(BinOp::And, std::move(conjuncts[i]), std::move(acc));
+    b->loc = loc;
+    b->type = Ty::Bool;
+    acc = std::move(b);
+  }
+  e = std::move(acc);
+}
+
+void planExpr(ExprPtr& e) {
+  fold(e);
+  reorderConjuncts(e);
+}
+
 } // namespace
+
+int exprCost(const Expr* e) {
+  switch (e->kind) {
+    case ExprKind::IntLit:
+    case ExprKind::FloatLit:
+    case ExprKind::BoolLit:
+    case ExprKind::IpLit:
+    case ExprKind::StrLit:
+    case ExprKind::Var:
+      return 0;
+    case ExprKind::Field:
+      return 1;
+    case ExprKind::Unary:
+      return exprCost(static_cast<const UnaryExpr*>(e)->operand.get());
+    case ExprKind::Binary: {
+      auto* b = static_cast<const BinaryExpr*>(e);
+      int base = 1;
+      if (b->op == BinOp::Eq || b->op == BinOp::Ne) {
+        if (b->lhs->type == Ty::Str) base = 8; // runtime call + memcmp
+      }
+      if (b->op == BinOp::Div || b->op == BinOp::Mod) base = 4;
+      return base + exprCost(b->lhs.get()) + exprCost(b->rhs.get());
+    }
+    case ExprKind::InList: {
+      auto* i = static_cast<const InListExpr*>(e);
+      int per = i->subject->type == Ty::Str ? 8 : 1;
+      return (int)i->elems.size() * per + exprCost(i->subject.get());
+    }
+    case ExprKind::InCidr:
+      return 2 + exprCost(static_cast<const InCidrExpr*>(e)->subject.get());
+    case ExprKind::StrOp: {
+      auto* s = static_cast<const StrOpExpr*>(e);
+      int base;
+      switch (s->op) {
+        case StrOpKind::StartsWith:
+        case StrOpKind::EndsWith: base = 6; break;
+        case StrOpKind::Contains: base = 16; break;
+        case StrOpKind::Matches: base = 32; break;
+      }
+      return base + exprCost(s->subject.get()) + exprCost(s->pattern.get());
+    }
+  }
+  return 1;
+}
 
 void plan(Program& prog) {
   for (auto& f : prog.filters) {
     for (auto& let : f.lets) fold(let.init);
-    fold(f.body);
+    planExpr(f.body);
   }
   for (auto& q : prog.queries)
-    if (q.where) fold(q.where);
+    if (q.where) planExpr(q.where);
 }
 
 } // namespace nql
