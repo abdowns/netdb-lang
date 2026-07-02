@@ -27,8 +27,9 @@ filter syn_probe(p: Packet) {
   p.flags & (SYN | ACK) == SYN and p.proto == TCP and p.dport < 1024
 }
 
-filter lan_egress(p: Packet) {
-  p.src in 10.0.0.0/8 and not (p.dst in 10.0.0.0/8) and p.len >= 1024
+filter exfil_candidate(p: Packet) {
+  let private = p.dst in 10.0.0.0/8 or p.dst in 192.168.0.0/16;
+  p.src in 10.0.0.0/8 and not private and p.len >= 1024
 }
 
 query rdp_targets over Packet {

@@ -6,6 +6,7 @@ namespace {
 struct Scope {
   const Schema* schema = nullptr;
   std::string paramName;
+  std::vector<const LetStmt*> lets;
 };
 
 // takes ExprPtr& to rewrite bare field identifiers into FieldExpr in place
@@ -32,6 +33,17 @@ private:
     Scope scope;
     scope.schema = f.schema;
     scope.paramName = f.paramName;
+    for (auto& let : f.lets) {
+      if (let.name == f.paramName)
+        fail(let.loc, "let '" + let.name + "' shadows the record parameter");
+      for (const auto* prev : scope.lets)
+        if (prev->name == let.name)
+          fail(let.loc, "redefinition of let '" + let.name + "'");
+      if (f.schema->field(let.name))
+        fail(let.loc, "let '" + let.name + "' shadows a field of " + f.schema->name);
+      let.type = check(let.init, scope);
+      scope.lets.push_back(&let);
+    }
     Ty t = check(f.body, scope);
     if (t != Ty::Bool)
       fail(f.body->loc, "filter '" + f.name + "' body must be bool, got " + std::string(tyName(t)));
@@ -74,13 +86,23 @@ private:
 
       case ExprKind::Var: {
         auto* v = static_cast<VarExpr*>(e.get());
-        const FieldInfo* fi = scope.schema->field(v->name);
-        if (!fi) fail(e->loc, "unknown identifier '" + v->name + "'");
-        auto fe = std::make_unique<FieldExpr>("", v->name);
-        fe->loc = e->loc;
-        fe->fi = fi;
-        e = std::move(fe);
-        return fi->ty;
+        for (size_t i = 0; i < scope.lets.size(); i++) {
+          if (scope.lets[i]->name == v->name) {
+            v->letIndex = (int)i;
+            return scope.lets[i]->type;
+          }
+        }
+        if (const FieldInfo* fi = scope.schema->field(v->name)) {
+          auto fe = std::make_unique<FieldExpr>("", v->name);
+          fe->loc = e->loc;
+          fe->fi = fi;
+          e = std::move(fe);
+          return fi->ty;
+        }
+        if (v->name == scope.paramName)
+          fail(e->loc, "record '" + v->name + "' used as a value; access a field like '" +
+                           v->name + ".<field>'");
+        fail(e->loc, "unknown identifier '" + v->name + "'");
       }
 
       case ExprKind::Field: {

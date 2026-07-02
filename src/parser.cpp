@@ -99,8 +99,9 @@ private:
   void parseFilter(Program& prog) {
     eat();
     FilterDecl f;
-    f.loc = cur().loc;
-    f.name = expect(Tok::Ident, "filter name").text;
+    Token name = expect(Tok::Ident, "filter name");
+    f.name = name.text;
+    f.loc = name.loc;
     expect(Tok::LParen, "filter parameter list");
     f.paramName = expect(Tok::Ident, "parameter name").text;
     expect(Tok::Colon, "after parameter name");
@@ -112,6 +113,17 @@ private:
         fail(rt.loc, "filters must return bool");
     }
     expect(Tok::LBrace, "filter body");
+    while (at(Tok::KwLet)) {
+      eat();
+      LetStmt let;
+      Token ln = expect(Tok::Ident, "let name");
+      let.name = ln.text;
+      let.loc = ln.loc;
+      expect(Tok::Assign, "after let name");
+      let.init = parseExpr();
+      expect(Tok::Semi, "after let binding");
+      f.lets.push_back(std::move(let));
+    }
     f.body = parseExpr();
     expect(Tok::RBrace, "end of filter body");
     prog.filters.push_back(std::move(f));
@@ -407,7 +419,7 @@ private:
             default: fail(t.loc, "bad const");
           }
         }
-        return mk<VarExpr>(t.loc, t.text); // param name or bare field: sema decides
+        return mk<VarExpr>(t.loc, t.text); // let, param, or bare field: sema decides
       }
       default:
         fail(t.loc, std::string("expected an expression, got ") + tokName(t.kind));

@@ -18,12 +18,16 @@ struct Value {
 
 class Interp {
 public:
-  explicit Interp(const uint8_t* rec) : rec_(rec) {}
+  Interp(const std::vector<LetStmt>& lets, const uint8_t* rec) : rec_(rec) {
+    letVals_.reserve(lets.size());
+    for (const auto& l : lets) letVals_.push_back(eval(l.init.get()));
+  }
 
   bool run(const Expr* body) { return eval(body).i != 0; }
 
 private:
   const uint8_t* rec_;
+  std::vector<Value> letVals_;
 
   static Value mkBool(bool b) {
     Value v;
@@ -66,15 +70,22 @@ private:
         v.ip = static_cast<const IpLitExpr*>(e)->addr;
         return v;
       }
+      case ExprKind::Var:
+        return letVals_[static_cast<const VarExpr*>(e)->letIndex];
 
       case ExprKind::Field: {
         const FieldInfo& fi = *static_cast<const FieldExpr*>(e)->fi;
         Value v;
         v.ty = fi.ty;
-        if (fi.ty == Ty::F64) v.f = loadF64(rec_, fi);
-        else if (fi.ty == Ty::Str) v.s = loadStr(rec_, fi);
-        else if (isUnsignedTy(fi.ty)) v.u = loadUInt(rec_, fi);
-        else v.i = loadSInt(rec_, fi);
+        switch (fi.ty) {
+          case Ty::Bool: v.i = loadUInt(rec_, fi) != 0; break;
+          case Ty::F64: v.f = loadF64(rec_, fi); break;
+          case Ty::Str: v.s = loadStr(rec_, fi); break;
+          case Ty::IP4: v.ip = (uint32_t)loadUInt(rec_, fi); break;
+          default:
+            if (isUnsignedTy(fi.ty)) v.u = loadUInt(rec_, fi);
+            else v.i = loadSInt(rec_, fi);
+        }
         return v;
       }
 
@@ -181,6 +192,8 @@ private:
 
 } // namespace
 
-bool evalPredicate(const Expr* body, const uint8_t* rec) { return Interp(rec).run(body); }
+bool evalPredicate(const Expr* body, const std::vector<LetStmt>& lets, const uint8_t* rec) {
+  return Interp(lets, rec).run(body);
+}
 
 } // namespace nql

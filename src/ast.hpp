@@ -15,7 +15,7 @@ using ExprPtr = std::unique_ptr<Expr>;
 
 enum class ExprKind : uint8_t {
   IntLit, FloatLit, StrLit, BoolLit, IpLit,
-  Field,
+  Var, Field,
   Unary, Binary, InList, InCidr, StrOp,
 };
 
@@ -64,6 +64,12 @@ struct IpLitExpr : Expr {
   IpLitExpr(uint32_t a) : Expr(ExprKind::IpLit), addr(a) {}
 };
 
+struct VarExpr : Expr {
+  std::string name;
+  int letIndex = -1;
+  VarExpr(std::string n) : Expr(ExprKind::Var), name(std::move(n)) {}
+};
+
 struct FieldExpr : Expr {
   std::string recName;
   std::string fieldName;
@@ -110,11 +116,19 @@ struct StrOpExpr : Expr {
       : Expr(ExprKind::StrOp), op(op), subject(std::move(s)), pattern(std::move(p)) {}
 };
 
+struct LetStmt {
+  std::string name;
+  ExprPtr init;
+  SrcLoc loc;
+  Ty type = Ty::Invalid;
+};
+
 struct FilterDecl {
   std::string name;
   std::string paramName;
   std::string schemaName;
   const Schema* schema = nullptr;
+  std::vector<LetStmt> lets;
   ExprPtr body;
   SrcLoc loc;
 };
