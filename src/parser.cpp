@@ -217,6 +217,14 @@ private:
     }
     if (negated) fail(cur().loc, "expected 'in' after 'not'");
 
+    if (at(Tok::KwBetween)) {
+      SrcLoc loc = eat().loc;
+      ExprPtr lo = parseBitOr();
+      expect(Tok::KwAnd, "in 'between x and y'");
+      ExprPtr hi = parseBitOr();
+      return mk<BetweenExpr>(loc, std::move(lhs), std::move(lo), std::move(hi));
+    }
+
     if (at(Tok::KwContains) || at(Tok::KwStartswith) || at(Tok::KwEndswith) || at(Tok::KwMatches)) {
       Token op = eat();
       StrOpKind k = op.kind == Tok::KwContains     ? StrOpKind::Contains
@@ -405,9 +413,15 @@ private:
         return e;
       }
       case Tok::Ident: {
-        eat();
+        if (t.text == "len" && peek().kind == Tok::LParen) {
+          eat(); eat();
+          ExprPtr arg = parseExpr();
+          expect(Tok::RParen, "closing ')' of len()");
+          return mk<LenExpr>(t.loc, std::move(arg));
+        }
         auto it = consts_.find(t.text);
         if (it != consts_.end()) {
+          eat();
           const Token& c = it->second;
           switch (c.kind) {
             case Tok::IntLit: return mk<IntLitExpr>(t.loc, c.ival);
@@ -419,6 +433,7 @@ private:
             default: fail(t.loc, "bad const");
           }
         }
+        eat();
         return mk<VarExpr>(t.loc, t.text); // let, param, or bare field: sema decides
       }
       default:
@@ -477,6 +492,11 @@ std::string exprToString(const Expr* e) {
       return "(" + exprToString(b->lhs.get()) + " " + binOpName(b->op) + " " +
              exprToString(b->rhs.get()) + ")";
     }
+    case ExprKind::Between: {
+      auto* b = static_cast<const BetweenExpr*>(e);
+      return "(" + exprToString(b->subject.get()) + " between " +
+             exprToString(b->lo.get()) + " and " + exprToString(b->hi.get()) + ")";
+    }
     case ExprKind::InList: {
       auto* i = static_cast<const InListExpr*>(e);
       std::string s = "(" + exprToString(i->subject.get()) + (i->negated ? " not in [" : " in [");
@@ -500,6 +520,8 @@ std::string exprToString(const Expr* e) {
       return "(" + exprToString(s->subject.get()) + " " + op + " " +
              exprToString(s->pattern.get()) + ")";
     }
+    case ExprKind::Len:
+      return "len(" + exprToString(static_cast<const LenExpr*>(e)->arg.get()) + ")";
   }
   return "?";
 }

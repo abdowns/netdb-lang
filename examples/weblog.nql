@@ -8,17 +8,19 @@ schema LogEntry {
   status: u16
   bytes:  u32
   ms:     f64
+  user:   str
   agent:  str
 }
 
 filter attack_surface(e: LogEntry) {
   e.path contains "/admin"
     or e.path startswith "/wp-"
+    or e.path matches "*.env"
     or e.agent contains "sqlmap"
 }
 
 filter errors(e: LogEntry) {
-  e.status >= 500
+  e.status >= 500 or (e.status == 404 and e.path endswith ".php")
 }
 
 query slow_api over LogEntry {
@@ -28,8 +30,14 @@ query slow_api over LogEntry {
   limit 10
 }
 
+query auth_failures over LogEntry {
+  where status == 401 and method == "POST"
+  select ts, client, path, user
+  limit 20
+}
+
 query big_responses over LogEntry {
-  where bytes > 512000
+  where bytes > 500KB and status == 200
   select ts, path, bytes
   order by bytes desc
   limit 5

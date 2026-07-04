@@ -15,7 +15,8 @@ const std::unordered_map<std::string_view, Tok> kKeywords = {
     {"asc", Tok::KwAsc},         {"desc", Tok::KwDesc},
     {"limit", Tok::KwLimit},     {"and", Tok::KwAnd},
     {"or", Tok::KwOr},           {"not", Tok::KwNot},
-    {"in", Tok::KwIn},           {"contains", Tok::KwContains},
+    {"in", Tok::KwIn},           {"between", Tok::KwBetween},
+    {"contains", Tok::KwContains},
     {"startswith", Tok::KwStartswith},
     {"endswith", Tok::KwEndswith},
     {"matches", Tok::KwMatches},
@@ -215,7 +216,16 @@ private:
       return t;
     }
 
-    if (std::isalpha((unsigned char)peek())) fail(loc, "unexpected character after number");
+    if (std::isalpha((unsigned char)peek())) {
+      size_t s = pos_;
+      std::string suf;
+      while (std::isalpha((unsigned char)peek())) suf += advance();
+      if (suf == "KB") v <<= 10;
+      else if (suf == "MB") v <<= 20;
+      else if (suf == "GB") v <<= 30;
+      else fail(loc, "unknown numeric suffix '" + suf + "' (expected KB, MB or GB)");
+      (void)s;
+    }
 
     t.kind = Tok::IntLit;
     t.ival = (int64_t)v;

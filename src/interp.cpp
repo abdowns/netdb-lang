@@ -102,12 +102,26 @@ private:
 
       case ExprKind::Binary: return evalBinary(static_cast<const BinaryExpr*>(e));
 
+      case ExprKind::Between: {
+        const auto* b = static_cast<const BetweenExpr*>(e);
+        Value s = eval(b->subject.get());
+        Value lo = eval(b->lo.get());
+        Value hi = eval(b->hi.get());
+        return mkBool(cmp(lo, s) <= 0 && cmp(s, hi) <= 0);
+      }
+
       case ExprKind::InList: {
         const auto* i = static_cast<const InListExpr*>(e);
         Value s = eval(i->subject.get());
-        for (const auto& el : i->elems)
-          if (valueEq(s, eval(el.get()))) return mkBool(!i->negated);
-        return mkBool(i->negated);
+        bool found = false;
+        for (const auto& el : i->elems) {
+          Value v = eval(el.get());
+          if (valueEq(s, v)) {
+            found = true;
+            break;
+          }
+        }
+        return mkBool(found != i->negated);
       }
 
       case ExprKind::InCidr: {
@@ -131,7 +145,11 @@ private:
         return mkBool(r != 0);
       }
 
-      default: fail(e->loc, "interpreter: unsupported expression");
+      case ExprKind::Len: {
+        const auto* l = static_cast<const LenExpr*>(e);
+        Value v = eval(l->arg.get());
+        return mkInt((int64_t)v.s.len, Ty::U64);
+      }
     }
     return mkBool(false);
   }

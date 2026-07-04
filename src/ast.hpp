@@ -16,7 +16,7 @@ using ExprPtr = std::unique_ptr<Expr>;
 enum class ExprKind : uint8_t {
   IntLit, FloatLit, StrLit, BoolLit, IpLit,
   Var, Field,
-  Unary, Binary, InList, InCidr, StrOp,
+  Unary, Binary, Between, InList, InCidr, StrOp, Len,
 };
 
 enum class UnOp : uint8_t { Not, Neg, BitNot };
@@ -91,6 +91,12 @@ struct BinaryExpr : Expr {
       : Expr(ExprKind::Binary), op(op), lhs(std::move(l)), rhs(std::move(r)) {}
 };
 
+struct BetweenExpr : Expr {
+  ExprPtr subject, lo, hi; // both ends inclusive
+  BetweenExpr(ExprPtr s, ExprPtr l, ExprPtr h)
+      : Expr(ExprKind::Between), subject(std::move(s)), lo(std::move(l)), hi(std::move(h)) {}
+};
+
 struct InListExpr : Expr {
   ExprPtr subject;
   std::vector<ExprPtr> elems;
@@ -114,6 +120,11 @@ struct StrOpExpr : Expr {
   ExprPtr subject, pattern;
   StrOpExpr(StrOpKind op, ExprPtr s, ExprPtr p)
       : Expr(ExprKind::StrOp), op(op), subject(std::move(s)), pattern(std::move(p)) {}
+};
+
+struct LenExpr : Expr {
+  ExprPtr arg;
+  LenExpr(ExprPtr a) : Expr(ExprKind::Len), arg(std::move(a)) {}
 };
 
 struct LetStmt {

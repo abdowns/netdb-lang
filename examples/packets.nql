@@ -29,7 +29,7 @@ filter syn_probe(p: Packet) {
 
 filter exfil_candidate(p: Packet) {
   let private = p.dst in 10.0.0.0/8 or p.dst in 192.168.0.0/16;
-  p.src in 10.0.0.0/8 and not private and p.len >= 1024
+  p.src in 10.0.0.0/8 and not private and p.len >= 1KB
 }
 
 query rdp_targets over Packet {

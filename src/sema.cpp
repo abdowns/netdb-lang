@@ -189,13 +189,27 @@ private:
         return Ty::Invalid;
       }
 
+      case ExprKind::Between: {
+        auto* b = static_cast<BetweenExpr*>(e.get());
+        Ty st = check(b->subject, scope);
+        Ty lt = check(b->lo, scope);
+        Ty ht = check(b->hi, scope);
+        if (!isNumericTy(st) || !isNumericTy(lt) || !isNumericTy(ht))
+          fail(e->loc, "'between' needs numeric operands");
+        return Ty::Bool;
+      }
+
       case ExprKind::InList: {
         auto* i = static_cast<InListExpr*>(e.get());
         Ty st = check(i->subject, scope);
         for (auto& el : i->elems) {
           Ty et = check(el, scope);
-          bool ok = st == et || (isNumericTy(st) && isNumericTy(et));
-          if (!ok) fail(el->loc, "list element type does not match subject");
+          bool ok = (isNumericTy(st) && isNumericTy(et)) ||
+                    (st == Ty::Str && et == Ty::Str) ||
+                    (st == Ty::IP4 && et == Ty::IP4);
+          if (!ok)
+            fail(el->loc, std::string("list element type ") + tyName(et) +
+                              " does not match subject type " + tyName(st));
         }
         return Ty::Bool;
       }
@@ -216,6 +230,13 @@ private:
           fail(e->loc, std::string("string operator needs str operands, got ") + tyName(st) +
                            " and " + tyName(pt));
         return Ty::Bool;
+      }
+
+      case ExprKind::Len: {
+        auto* l = static_cast<LenExpr*>(e.get());
+        Ty t = check(l->arg, scope);
+        if (t != Ty::Str) fail(e->loc, std::string("len() needs a str, got ") + tyName(t));
+        return Ty::U64;
       }
     }
     return Ty::Invalid;

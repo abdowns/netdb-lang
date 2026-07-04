@@ -50,25 +50,39 @@ ExprPtr floatLit(double v, SrcLoc loc) {
   return e;
 }
 
-void fold(ExprPtr& e) {
+void fold(ExprPtr& e);
+
+void foldChildren(Expr* e) {
   switch (e->kind) {
-    case ExprKind::Unary: fold(static_cast<UnaryExpr*>(e.get())->operand); break;
+    case ExprKind::Unary: fold(static_cast<UnaryExpr*>(e)->operand); break;
     case ExprKind::Binary: {
-      auto* b = static_cast<BinaryExpr*>(e.get());
+      auto* b = static_cast<BinaryExpr*>(e);
       fold(b->lhs);
       fold(b->rhs);
       break;
     }
-    case ExprKind::InList: fold(static_cast<InListExpr*>(e.get())->subject); break;
-    case ExprKind::InCidr: fold(static_cast<InCidrExpr*>(e.get())->subject); break;
+    case ExprKind::Between: {
+      auto* b = static_cast<BetweenExpr*>(e);
+      fold(b->subject);
+      fold(b->lo);
+      fold(b->hi);
+      break;
+    }
+    case ExprKind::InList: fold(static_cast<InListExpr*>(e)->subject); break;
+    case ExprKind::InCidr: fold(static_cast<InCidrExpr*>(e)->subject); break;
     case ExprKind::StrOp: {
-      auto* s = static_cast<StrOpExpr*>(e.get());
+      auto* s = static_cast<StrOpExpr*>(e);
       fold(s->subject);
       fold(s->pattern);
       break;
     }
+    case ExprKind::Len: fold(static_cast<LenExpr*>(e)->arg); break;
     default: break;
   }
+}
+
+void fold(ExprPtr& e) {
+  foldChildren(e.get());
 
   if (e->kind == ExprKind::Unary) {
     auto* u = static_cast<UnaryExpr*>(e.get());
@@ -99,29 +113,33 @@ void fold(ExprPtr& e) {
 
   int64_t l, r;
   if (isIntLit(bin->lhs.get(), l) && isIntLit(bin->rhs.get(), r)) {
+    bool uns = promote(bin->lhs->type, bin->rhs->type).isUnsigned;
+    uint64_t ul = (uint64_t)l, ur = (uint64_t)r;
     switch (bin->op) {
       case BinOp::Add: e = intLit(l + r, e->loc, e->type); return;
       case BinOp::Sub: e = intLit(l - r, e->loc, e->type); return;
       case BinOp::Mul: e = intLit(l * r, e->loc, e->type); return;
       case BinOp::Div:
         if (r == 0) fail(e->loc, "division by zero in constant expression");
-        e = intLit(l / r, e->loc, e->type);
+        e = intLit(uns ? (int64_t)(ul / ur) : l / r, e->loc, e->type);
         return;
       case BinOp::Mod:
         if (r == 0) fail(e->loc, "modulo by zero in constant expression");
-        e = intLit(l % r, e->loc, e->type);
+        e = intLit(uns ? (int64_t)(ul % ur) : l % r, e->loc, e->type);
         return;
       case BinOp::BitAnd: e = intLit(l & r, e->loc, e->type); return;
       case BinOp::BitOr: e = intLit(l | r, e->loc, e->type); return;
       case BinOp::BitXor: e = intLit(l ^ r, e->loc, e->type); return;
-      case BinOp::Shl: e = intLit(l << (r & 63), e->loc, e->type); return;
-      case BinOp::Shr: e = intLit(l >> (r & 63), e->loc, e->type); return;
+      case BinOp::Shl: e = intLit((int64_t)(ul << (ur & 63)), e->loc, e->type); return;
+      case BinOp::Shr:
+        e = intLit(uns ? (int64_t)(ul >> (ur & 63)) : l >> (r & 63), e->loc, e->type);
+        return;
       case BinOp::Eq: e = boolLit(l == r, e->loc); return;
       case BinOp::Ne: e = boolLit(l != r, e->loc); return;
-      case BinOp::Lt: e = boolLit(l < r, e->loc); return;
-      case BinOp::Le: e = boolLit(l <= r, e->loc); return;
-      case BinOp::Gt: e = boolLit(l > r, e->loc); return;
-      case BinOp::Ge: e = boolLit(l >= r, e->loc); return;
+      case BinOp::Lt: e = boolLit(uns ? ul < ur : l < r, e->loc); return;
+      case BinOp::Le: e = boolLit(uns ? ul <= ur : l <= r, e->loc); return;
+      case BinOp::Gt: e = boolLit(uns ? ul > ur : l > r, e->loc); return;
+      case BinOp::Ge: e = boolLit(uns ? ul >= ur : l >= r, e->loc); return;
       default: return;
     }
   }
@@ -198,6 +216,8 @@ int exprCost(const Expr* e) {
       return 0;
     case ExprKind::Field:
       return 1;
+    case ExprKind::Len:
+      return 1 + exprCost(static_cast<const LenExpr*>(e)->arg.get());
     case ExprKind::Unary:
       return exprCost(static_cast<const UnaryExpr*>(e)->operand.get());
     case ExprKind::Binary: {
@@ -208,6 +228,10 @@ int exprCost(const Expr* e) {
       }
       if (b->op == BinOp::Div || b->op == BinOp::Mod) base = 4;
       return base + exprCost(b->lhs.get()) + exprCost(b->rhs.get());
+    }
+    case ExprKind::Between: {
+      auto* b = static_cast<const BetweenExpr*>(e);
+      return 2 + exprCost(b->subject.get()) + exprCost(b->lo.get()) + exprCost(b->hi.get());
     }
     case ExprKind::InList: {
       auto* i = static_cast<const InListExpr*>(e);
