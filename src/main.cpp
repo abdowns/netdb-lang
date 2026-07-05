@@ -30,7 +30,9 @@ struct Args {
   int64_t limit = -1;
   size_t n = 20000;
   uint64_t seed = 42;
+  bool noOpt = false;
   bool noVerify = false;
+  bool dumpAst = false, dumpReflect = false, dumpPlan = false, dumpIr = false;
 };
 
 [[noreturn]] void usage() {
@@ -38,7 +40,8 @@ struct Args {
       "nql — a JIT-compiled query language for packets, logs and records\n"
       "\n"
       "usage:\n"
-      "  nql run <file.nql> [options]   compile and execute queries/filters\n"
+      "  nql run  <file.nql> [options]   compile and execute queries/filters\n"
+      "  nql dump <file.nql> [options]   show reflection, AST, plan and LLVM IR\n"
       "\n"
       "run options:\n"
       "  --data <file.csv>   load records from CSV (columns matched to schema by name)\n"
@@ -48,7 +51,11 @@ struct Args {
       "  --out json|csv|table  output format (default table)\n"
       "  --limit <count>     cap the number of rows printed\n"
       "  --seed <n>          synthetic data seed (default 42)\n"
-      "  --no-verify         skip cross-checking JIT results against the interpreter\n";
+      "  --no-verify         skip cross-checking JIT results against the interpreter\n"
+      "\n"
+      "dump options:\n"
+      "  --reflect --ast --plan --ir     pick sections (default: all)\n"
+      "  --no-opt                        show unoptimized IR\n";
   exit(2);
 }
 
@@ -177,7 +184,7 @@ int cmdRun(const Args& args) {
 
   Engine engine;
   auto t0 = std::chrono::steady_clock::now();
-  engine.compile(prog);
+  engine.compile(prog, !args.noOpt);
   std::cerr << "JIT compiled " << prog.filters.size() << " filter(s) and "
             << prog.queries.size() << " query(ies) in " << msSince(t0) << " ms\n";
 
@@ -221,6 +228,63 @@ int cmdRun(const Args& args) {
   return 0;
 }
 
+int cmdDump(const Args& args) {
+  Program prog = loadProgram(args.file);
+  bool all = !args.dumpAst && !args.dumpReflect && !args.dumpPlan && !args.dumpIr;
+
+  if (all || args.dumpReflect) {
+    std::cout << "=== reflection ===\n";
+    for (const auto& s : prog.schemas) {
+      std::cout << "schema " << s->name << "  (size " << s->size << ", align " << s->align
+                << ")\n";
+      for (const auto& f : s->fields) {
+        char buf[96];
+        snprintf(buf, sizeof buf, "  %-12s %-5s offset=%-3u size=%-2u align=%u\n",
+                 f.name.c_str(), tyName(f.ty), f.offset, f.size, f.align);
+        std::cout << buf;
+      }
+    }
+    std::cout << '\n';
+  }
+
+  if (all || args.dumpAst) {
+    std::cout << "=== ast ===\n";
+    for (const auto& f : prog.filters) {
+      std::cout << "filter " << f.name << "(" << f.paramName << ": " << f.schemaName << ")\n";
+      for (const auto& let : f.lets)
+        std::cout << "  let " << let.name << ": " << tyName(let.type) << " = "
+                  << exprToString(let.init.get()) << '\n';
+      std::cout << "  " << exprToString(f.body.get()) << '\n';
+    }
+    for (const auto& q : prog.queries) {
+      std::cout << "query " << q.name << " over " << q.schemaName << '\n';
+      if (q.where) std::cout << "  where  " << exprToString(q.where.get()) << '\n';
+      if (!q.selectFields.empty()) {
+        std::cout << "  select ";
+        for (size_t i = 0; i < q.selectFields.size(); i++)
+          std::cout << (i ? ", " : "") << q.selectFields[i];
+        std::cout << '\n';
+      }
+      if (!q.orderField.empty())
+        std::cout << "  order by " << q.orderField << (q.orderDesc ? " desc" : " asc") << '\n';
+      if (q.limit >= 0) std::cout << "  limit " << q.limit << '\n';
+    }
+    std::cout << '\n';
+  }
+
+  if (all || args.dumpPlan) {
+    std::cout << "=== plan ===\n" << explainPlan(prog) << '\n';
+  }
+
+  if (all || args.dumpIr) {
+    Engine engine;
+    std::string ir = engine.compile(prog, !args.noOpt);
+    std::cout << "=== llvm ir (" << (args.noOpt ? "unoptimized" : "O2") << ") ===\n"
+              << ir << '\n';
+  }
+  return 0;
+}
+
 Args parseArgs(int argc, char** argv) {
   Args a;
   if (argc < 3) usage();
@@ -245,7 +309,12 @@ Args parseArgs(int argc, char** argv) {
       else if (v == "table") a.out = OutFormat::Table;
       else fail("bad --out format '" + v + "'");
     }
+    else if (arg == "--no-opt") a.noOpt = true;
     else if (arg == "--no-verify") a.noVerify = true;
+    else if (arg == "--ast") a.dumpAst = true;
+    else if (arg == "--reflect") a.dumpReflect = true;
+    else if (arg == "--plan") a.dumpPlan = true;
+    else if (arg == "--ir") a.dumpIr = true;
     else fail("unknown option '" + arg + "'");
   }
   return a;
@@ -257,6 +326,7 @@ int main(int argc, char** argv) {
   try {
     Args args = parseArgs(argc, argv);
     if (args.command == "run") return cmdRun(args);
+    if (args.command == "dump") return cmdDump(args);
     usage();
   } catch (const DiagError& e) {
     std::cerr << "nql: " << e.what() << '\n';

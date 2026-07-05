@@ -187,10 +187,10 @@ void reorderConjuncts(ExprPtr& e) {
                      return exprCost(a.get()) < exprCost(b.get());
                    });
 
-  ExprPtr acc = std::move(conjuncts.back());
-  for (size_t i = conjuncts.size() - 1; i-- > 0;) {
+  ExprPtr acc = std::move(conjuncts[0]);
+  for (size_t i = 1; i < conjuncts.size(); i++) {
     SrcLoc loc = conjuncts[i]->loc;
-    auto b = std::make_unique<BinaryExpr>(BinOp::And, std::move(conjuncts[i]), std::move(acc));
+    auto b = std::make_unique<BinaryExpr>(BinOp::And, std::move(acc), std::move(conjuncts[i]));
     b->loc = loc;
     b->type = Ty::Bool;
     acc = std::move(b);
@@ -262,6 +262,36 @@ void plan(Program& prog) {
   }
   for (auto& q : prog.queries)
     if (q.where) planExpr(q.where);
+}
+
+std::string explainPlan(const Program& prog) {
+  std::string out;
+  auto describe = [&](const std::string& kind, const std::string& name, const Expr* body) {
+    out += kind + " " + name + ":\n";
+    std::vector<const Expr*> conjuncts;
+    const Expr* cur = body;
+    while (cur->kind == ExprKind::Binary &&
+           static_cast<const BinaryExpr*>(cur)->op == BinOp::And) {
+      auto* b = static_cast<const BinaryExpr*>(cur);
+      conjuncts.push_back(b->rhs.get());
+      cur = b->lhs.get();
+    }
+    conjuncts.push_back(cur);
+    std::reverse(conjuncts.begin(), conjuncts.end());
+    if (conjuncts.size() == 1) {
+      out += "  predicate (cost " + std::to_string(exprCost(body)) + "): " + exprToString(body) + "\n";
+    } else {
+      for (size_t i = 0; i < conjuncts.size(); i++) {
+        out += "  step " + std::to_string(i + 1) + " (cost " +
+               std::to_string(exprCost(conjuncts[i])) + "): " + exprToString(conjuncts[i]) + "\n";
+      }
+      out += "  => cheapest conjunct first; later steps only run when earlier ones pass\n";
+    }
+  };
+  for (const auto& f : prog.filters) describe("filter", f.name, f.body.get());
+  for (const auto& q : prog.queries)
+    if (q.where) describe("query", q.name, q.where.get());
+  return out;
 }
 
 } // namespace nql

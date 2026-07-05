@@ -25,7 +25,8 @@ public:
   Engine();
   ~Engine();
 
-  void compile(const Program& prog);
+  // returns final IR text, for `dump --ir`
+  std::string compile(const Program& prog, bool optimize = true);
 
   CompiledPredicate filter(const std::string& name) { return predicate("f$" + name); }
   CompiledPredicate query(const std::string& name) { return predicate("q$" + name); }

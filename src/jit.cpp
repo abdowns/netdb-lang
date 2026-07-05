@@ -1,5 +1,7 @@
 #include "jit.hpp"
 
+#include <mutex>
+
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/Module.h"
@@ -38,8 +40,11 @@ static T orDie(Expected<T> e, const char* what) {
 }
 
 Engine::Engine() {
-  InitializeNativeTarget();
-  InitializeNativeTargetAsmPrinter();
+  static std::once_flag once;
+  std::call_once(once, [] {
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+  });
 
   jit_ = orDie(LLJITBuilder().create(), "failed to create JIT");
 
@@ -59,7 +64,7 @@ Engine::Engine() {
 
 Engine::~Engine() = default;
 
-void Engine::compile(const Program& prog) {
+std::string Engine::compile(const Program& prog, bool optimize) {
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("nql_jit", *ctx);
   mod->setDataLayout(jit_->getDataLayout());
@@ -71,13 +76,20 @@ void Engine::compile(const Program& prog) {
 
   emitProgram(prog, *mod);
 
-  if (verifyModule(*mod, &errs()))
-    fail("internal error: generated invalid IR");
+  std::string verifyErrs;
+  raw_string_ostream verifyOS(verifyErrs);
+  if (verifyModule(*mod, &verifyOS))
+    fail("internal error: generated invalid IR:\n" + verifyErrs);
 
-  optimizeModule(*mod);
+  if (optimize) optimizeModule(*mod);
+
+  std::string ir;
+  raw_string_ostream os(ir);
+  mod->print(os, nullptr);
 
   if (auto err = jit_->addIRModule(ThreadSafeModule(std::move(mod), std::move(ctx))))
     fail("failed to add module to JIT: " + toString(std::move(err)));
+  return ir;
 }
 
 void* Engine::lookup(const std::string& sym) {
