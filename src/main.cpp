@@ -29,6 +29,8 @@ struct Args {
   OutFormat out = OutFormat::Table;
   int64_t limit = -1;
   size_t n = 20000;
+  size_t benchN = 5000000;
+  int reps = 5;
   uint64_t seed = 42;
   bool noOpt = false;
   bool noVerify = false;
@@ -40,8 +42,9 @@ struct Args {
       "nql — a JIT-compiled query language for packets, logs and records\n"
       "\n"
       "usage:\n"
-      "  nql run  <file.nql> [options]   compile and execute queries/filters\n"
-      "  nql dump <file.nql> [options]   show reflection, AST, plan and LLVM IR\n"
+      "  nql run   <file.nql> [options]   compile and execute queries/filters\n"
+      "  nql dump  <file.nql> [options]   show reflection, AST, plan and LLVM IR\n"
+      "  nql bench <file.nql> [options]   benchmark JIT vs interpreter (vs native C++)\n"
       "\n"
       "run options:\n"
       "  --data <file.csv>   load records from CSV (columns matched to schema by name)\n"
@@ -55,13 +58,26 @@ struct Args {
       "\n"
       "dump options:\n"
       "  --reflect --ast --plan --ir     pick sections (default: all)\n"
-      "  --no-opt                        show unoptimized IR\n";
+      "  --no-opt                        show unoptimized IR\n"
+      "\n"
+      "bench options:\n"
+      "  --filter <name>     filter to benchmark (default: first)\n"
+      "  --n <count>         record count (default 5000000)\n"
+      "  --reps <count>      timed repetitions, best is reported (default 5)\n";
   exit(2);
 }
 
 double msSince(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
       .count();
+}
+
+std::string humanBytes(double b) {
+  char buf[32];
+  if (b >= 1 << 30) snprintf(buf, sizeof buf, "%.1f GB", b / (1 << 30));
+  else if (b >= 1 << 20) snprintf(buf, sizeof buf, "%.1f MB", b / (1 << 20));
+  else snprintf(buf, sizeof buf, "%.1f KB", b / (1 << 10));
+  return buf;
 }
 
 Program loadProgram(const std::string& path) {
@@ -134,8 +150,8 @@ public:
                 << args_.dataPath << " (" << msSince(t0) << " ms)\n";
     } else {
       rs = std::make_unique<RecordSet>(synthesize(schema, args_.n, args_.seed));
-      std::cerr << "synthesized " << rs->count() << " " << schema.name << " records (seed "
-                << args_.seed << ")\n";
+      std::cerr << "synthesized " << rs->count() << " " << schema.name << " records ("
+                << humanBytes((double)rs->bytes()) << ", seed " << args_.seed << ")\n";
     }
     return *sets_.emplace(schema.name, std::move(rs)).first->second;
   }
@@ -285,6 +301,131 @@ int cmdDump(const Args& args) {
   return 0;
 }
 
+struct BenchRow {
+  std::string engine;
+  double ms;
+  uint64_t matches;
+  size_t records;
+};
+
+void printBenchRow(const BenchRow& r, size_t recordBytes) {
+  double nsPerRec = r.ms * 1e6 / (double)r.records;
+  double recPerSec = (double)r.records / (r.ms / 1000.0);
+  double gbPerSec = recPerSec * (double)recordBytes / (1 << 30);
+  char buf[160];
+  snprintf(buf, sizeof buf, "  %-22s %10.2f ms %10.1f M rec/s %9.2f ns/rec %8.2f GB/s  %llu matches\n",
+           r.engine.c_str(), r.ms, recPerSec / 1e6, nsPerRec, gbPerSec,
+           (unsigned long long)r.matches);
+  std::cout << buf;
+}
+
+// upper bound baseline: hand written match for examples/packets.nql's suspicious filter
+bool nativeBaselineAvailable(const FilterDecl& f) {
+  if (f.name != "suspicious") return false;
+  const Schema& s = *f.schema;
+  const FieldInfo *dport = s.field("dport"), *dst = s.field("dst"), *proto = s.field("proto"),
+                  *len = s.field("len");
+  return dport && dport->ty == Ty::U16 && dst && dst->ty == Ty::IP4 && proto &&
+         proto->ty == Ty::U8 && len && len->ty == Ty::U32;
+}
+
+uint64_t nativeBaselineCount(const FilterDecl& f, const RecordSet& rs) {
+  const Schema& s = *f.schema;
+  const uint32_t oDport = s.field("dport")->offset, oDst = s.field("dst")->offset,
+                 oProto = s.field("proto")->offset, oLen = s.field("len")->offset;
+  const size_t stride = s.size;
+  const uint8_t* base = rs.data();
+  uint64_t c = 0;
+  for (size_t i = 0, n = rs.count(); i < n; i++) {
+    const uint8_t* r = base + i * stride;
+    uint16_t dport;
+    uint32_t dst, len;
+    std::memcpy(&dport, r + oDport, 2);
+    std::memcpy(&dst, r + oDst, 4);
+    std::memcpy(&len, r + oLen, 4);
+    uint8_t proto = r[oProto];
+    bool m = ((dport == 22 || dport == 23 || dport == 3389 || dport == 4444) ||
+              (dst & 0xFF000000u) == (185u << 24)) &&
+             proto == 6 && len > 64;
+    c += m;
+  }
+  return c;
+}
+
+int cmdBench(const Args& args) {
+  Program prog = loadProgram(args.file);
+  if (prog.filters.empty()) fail("bench needs at least one filter in the file");
+  const FilterDecl& f = !args.filterName.empty()
+                            ? *[&] {
+                                FilterDecl* p = prog.findFilter(args.filterName);
+                                if (!p) fail("no filter named '" + args.filterName + "'");
+                                return p;
+                              }()
+                            : prog.filters.front();
+
+  std::cout << "benchmark: filter " << f.name << " over schema " << f.schema->name << " ("
+            << f.schema->size << " bytes/record)\n";
+  std::cout << "predicate: " << exprToString(f.body.get()) << "\n\n";
+
+  auto t0 = std::chrono::steady_clock::now();
+  RecordSet rs = synthesize(*f.schema, args.benchN, args.seed);
+  std::cout << "synthesized " << rs.count() << " records ("
+            << humanBytes((double)rs.bytes()) << ") in " << msSince(t0) << " ms\n";
+
+  Engine engine;
+  t0 = std::chrono::steady_clock::now();
+  engine.compile(prog);
+  double compileMs = msSince(t0);
+  std::cout << "JIT compile (parse->IR->O2->native): " << compileMs << " ms\n\n";
+
+  CompiledPredicate cp = engine.filter(f.name);
+  crossCheck(("filter " + f.name).c_str(), f.body.get(), f.lets, cp, rs);
+  std::cout << '\n';
+
+  uint64_t jitMatches = cp.count(rs.data(), rs.count());
+  double jitBest = 1e30;
+  for (int r = 0; r < args.reps; r++) {
+    t0 = std::chrono::steady_clock::now();
+    uint64_t m = cp.count(rs.data(), rs.count());
+    double ms = msSince(t0);
+    if (m != jitMatches) fail("unstable match count");
+    jitBest = std::min(jitBest, ms);
+  }
+  printBenchRow({"JIT (batch kernel)", jitBest, jitMatches, rs.count()}, f.schema->size);
+
+  if (nativeBaselineAvailable(f)) {
+    uint64_t nativeMatches = nativeBaselineCount(f, rs);
+    double nativeBest = 1e30;
+    for (int r = 0; r < args.reps; r++) {
+      t0 = std::chrono::steady_clock::now();
+      uint64_t m = nativeBaselineCount(f, rs);
+      double ms = msSince(t0);
+      if (m != nativeMatches) fail("unstable native count");
+      nativeBest = std::min(nativeBest, ms);
+    }
+    printBenchRow({"C++ -O2 (hand-written)", nativeBest, nativeMatches, rs.count()},
+                  f.schema->size);
+    if (nativeMatches != jitMatches)
+      std::cout << "  WARNING: native baseline disagrees with JIT — predicates differ\n";
+  }
+
+  size_t k = std::min<size_t>(rs.count(), 500000); // interpreter is much slower, so subsample
+  uint64_t interpMatches = 0;
+  t0 = std::chrono::steady_clock::now();
+  for (size_t i = 0; i < k; i++) interpMatches += evalFilter(f, rs.at(i));
+  double interpMs = msSince(t0);
+  BenchRow ir{"AST interpreter", interpMs, interpMatches, k};
+  printBenchRow(ir, f.schema->size);
+  if (k < rs.count())
+    std::cout << "  (interpreter measured on the first " << k << " records)\n";
+
+  double speedup = (interpMs / (double)k) / (jitBest / (double)rs.count());
+  char buf[96];
+  snprintf(buf, sizeof buf, "\nJIT speedup over interpreter: %.0fx\n", speedup);
+  std::cout << buf;
+  return 0;
+}
+
 Args parseArgs(int argc, char** argv) {
   Args a;
   if (argc < 3) usage();
@@ -300,7 +441,8 @@ Args parseArgs(int argc, char** argv) {
     else if (arg == "--filter") a.filterName = value();
     else if (arg == "--query") a.queryName = value();
     else if (arg == "--limit") a.limit = std::stoll(value());
-    else if (arg == "--n") a.n = std::stoull(value());
+    else if (arg == "--n") { a.n = std::stoull(value()); a.benchN = a.n; }
+    else if (arg == "--reps") a.reps = std::stoi(value());
     else if (arg == "--seed") a.seed = std::stoull(value());
     else if (arg == "--out") {
       std::string v = value();
@@ -327,6 +469,7 @@ int main(int argc, char** argv) {
     Args args = parseArgs(argc, argv);
     if (args.command == "run") return cmdRun(args);
     if (args.command == "dump") return cmdDump(args);
+    if (args.command == "bench") return cmdBench(args);
     usage();
   } catch (const DiagError& e) {
     std::cerr << "nql: " << e.what() << '\n';
