@@ -43,19 +43,20 @@ private:
     return v;
   }
 
-  static Value mkF64(double x) {
-    Value v;
-    v.ty = Ty::F64;
-    v.f = x;
-    return v;
+  static double asF64(const Value& v) {
+    if (v.ty == Ty::F64) return v.f;
+    return isUnsignedTy(v.ty) ? (double)v.u : (double)v.i;
   }
-
-  static double asF64(const Value& v) { return v.ty == Ty::F64 ? v.f : (double)v.i; }
 
   Value eval(const Expr* e) {
     switch (e->kind) {
       case ExprKind::IntLit: return mkInt(static_cast<const IntLitExpr*>(e)->v, e->type);
-      case ExprKind::FloatLit: return mkF64(static_cast<const FloatLitExpr*>(e)->v);
+      case ExprKind::FloatLit: {
+        Value v;
+        v.ty = Ty::F64;
+        v.f = static_cast<const FloatLitExpr*>(e)->v;
+        return v;
+      }
       case ExprKind::StrLit: {
         const auto* s = static_cast<const StrLitExpr*>(e);
         Value v;
@@ -94,7 +95,12 @@ private:
         Value v = eval(u->operand.get());
         switch (u->op) {
           case UnOp::Not: return mkBool(v.i == 0);
-          case UnOp::Neg: return v.ty == Ty::F64 ? mkF64(-v.f) : mkInt(-v.i, e->type);
+          case UnOp::Neg:
+            if (v.ty == Ty::F64) {
+              v.f = -v.f;
+              return v;
+            }
+            return mkInt(-v.i, e->type);
           case UnOp::BitNot: return mkInt(~v.i, e->type);
         }
         return v;
@@ -107,7 +113,7 @@ private:
         Value s = eval(b->subject.get());
         Value lo = eval(b->lo.get());
         Value hi = eval(b->hi.get());
-        return mkBool(cmp(lo, s) <= 0 && cmp(s, hi) <= 0);
+        return mkBool(cmpLe(lo, s) && cmpLe(s, hi));
       }
 
       case ExprKind::InList: {
@@ -157,54 +163,103 @@ private:
   static bool valueEq(const Value& a, const Value& b) {
     if (a.ty == Ty::Str) return nql_str_eq(a.s.ptr, a.s.len, b.s.ptr, b.s.len);
     if (a.ty == Ty::IP4) return a.ip == b.ip;
-    if (a.ty == Ty::F64 || b.ty == Ty::F64) return asF64(a) == asF64(b);
-    return a.i == b.i;
+    Promo p = promote(a.ty, b.ty);
+    if (p.isFloat) return asF64(a) == asF64(b);
+    return a.i == b.i; // same 64 bit pattern regardless of signedness
   }
 
-  static int cmp(const Value& a, const Value& b) {
-    if (a.ty == Ty::F64 || b.ty == Ty::F64) {
-      double x = asF64(a), y = asF64(b);
-      return x < y ? -1 : x > y ? 1 : 0;
-    }
-    if (isUnsignedTy(a.ty)) return a.u < b.u ? -1 : a.u > b.u ? 1 : 0;
-    return a.i < b.i ? -1 : a.i > b.i ? 1 : 0;
+  static bool cmpLe(const Value& a, const Value& b) {
+    Promo p = promote(a.ty, b.ty);
+    if (p.isFloat) return asF64(a) <= asF64(b);
+    if (p.isUnsigned) return a.u <= b.u;
+    return a.i <= b.i;
   }
 
   Value evalBinary(const BinaryExpr* b) {
+    if (b->op == BinOp::And) {
+      Value l = eval(b->lhs.get());
+      if (l.i == 0) return mkBool(false);
+      return mkBool(eval(b->rhs.get()).i != 0);
+    }
+    if (b->op == BinOp::Or) {
+      Value l = eval(b->lhs.get());
+      if (l.i != 0) return mkBool(true);
+      return mkBool(eval(b->rhs.get()).i != 0);
+    }
+
     Value l = eval(b->lhs.get());
-    if (b->op == BinOp::And && l.i == 0) return mkBool(false);
-    if (b->op == BinOp::Or && l.i != 0) return mkBool(true);
     Value r = eval(b->rhs.get());
 
-    bool isF = l.ty == Ty::F64 || r.ty == Ty::F64;
-    bool isU = isUnsignedTy(l.ty);
+    if (b->op == BinOp::Eq) return mkBool(valueEq(l, r));
+    if (b->op == BinOp::Ne) return mkBool(!valueEq(l, r));
+
+    Promo p = promote(l.ty, r.ty);
 
     switch (b->op) {
-      case BinOp::And:
-      case BinOp::Or: return mkBool(r.i != 0);
-      case BinOp::Eq: return mkBool(valueEq(l, r));
-      case BinOp::Ne: return mkBool(!valueEq(l, r));
-      case BinOp::Lt: return mkBool(cmp(l, r) < 0);
-      case BinOp::Le: return mkBool(cmp(l, r) <= 0);
-      case BinOp::Gt: return mkBool(cmp(l, r) > 0);
-      case BinOp::Ge: return mkBool(cmp(l, r) >= 0);
-      case BinOp::Add: return isF ? mkF64(asF64(l) + asF64(r)) : mkInt(l.i + r.i, b->type);
-      case BinOp::Sub: return isF ? mkF64(asF64(l) - asF64(r)) : mkInt(l.i - r.i, b->type);
-      case BinOp::Mul: return isF ? mkF64(asF64(l) * asF64(r)) : mkInt(l.i * r.i, b->type);
+      case BinOp::Lt:
+      case BinOp::Le:
+      case BinOp::Gt:
+      case BinOp::Ge: {
+        int c;
+        if (p.isFloat) {
+          double a = asF64(l), bb = asF64(r);
+          c = a < bb ? -1 : a > bb ? 1 : 0;
+        } else if (p.isUnsigned) {
+          c = l.u < r.u ? -1 : l.u > r.u ? 1 : 0;
+        } else {
+          c = l.i < r.i ? -1 : l.i > r.i ? 1 : 0;
+        }
+        switch (b->op) {
+          case BinOp::Lt: return mkBool(c < 0);
+          case BinOp::Le: return mkBool(c <= 0);
+          case BinOp::Gt: return mkBool(c > 0);
+          default: return mkBool(c >= 0);
+        }
+      }
+
+      case BinOp::Add:
+      case BinOp::Sub:
+      case BinOp::Mul:
       case BinOp::Div:
-        if (isF) return mkF64(asF64(l) / asF64(r));
-        if (r.i == 0) fail(b->loc, "division by zero at runtime");
-        return mkInt(isU ? (int64_t)(l.u / r.u) : l.i / r.i, b->type);
-      case BinOp::Mod:
-        if (r.i == 0) fail(b->loc, "modulo by zero at runtime");
-        return mkInt(isU ? (int64_t)(l.u % r.u) : l.i % r.i, b->type);
+      case BinOp::Mod: {
+        if (p.isFloat) {
+          double a = asF64(l), bb = asF64(r);
+          Value v;
+          v.ty = Ty::F64;
+          switch (b->op) {
+            case BinOp::Add: v.f = a + bb; break;
+            case BinOp::Sub: v.f = a - bb; break;
+            case BinOp::Mul: v.f = a * bb; break;
+            default: v.f = a / bb; break;
+          }
+          return v;
+        }
+        int64_t out;
+        switch (b->op) {
+          case BinOp::Add: out = l.i + r.i; break;
+          case BinOp::Sub: out = l.i - r.i; break;
+          case BinOp::Mul: out = l.i * r.i; break;
+          case BinOp::Div:
+            if (r.i == 0) fail(b->loc, "division by zero at runtime");
+            out = p.isUnsigned ? (int64_t)(l.u / r.u) : l.i / r.i;
+            break;
+          default:
+            if (r.i == 0) fail(b->loc, "modulo by zero at runtime");
+            out = p.isUnsigned ? (int64_t)(l.u % r.u) : l.i % r.i;
+            break;
+        }
+        return mkInt(out, b->type);
+      }
+
       case BinOp::BitAnd: return mkInt(l.i & r.i, b->type);
       case BinOp::BitOr: return mkInt(l.i | r.i, b->type);
       case BinOp::BitXor: return mkInt(l.i ^ r.i, b->type);
       case BinOp::Shl: return mkInt((int64_t)(l.u << (r.u & 63)), b->type);
-      case BinOp::Shr: return mkInt(isU ? (int64_t)(l.u >> (r.u & 63)) : l.i >> (r.i & 63), b->type);
+      case BinOp::Shr:
+        return mkInt(p.isUnsigned ? (int64_t)(l.u >> (r.u & 63)) : l.i >> (r.i & 63), b->type);
+
+      default: return mkBool(false);
     }
-    return mkBool(false);
   }
 };
 
