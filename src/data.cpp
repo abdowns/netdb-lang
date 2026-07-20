@@ -1,6 +1,7 @@
 #include "data.hpp"
 
 #include <charconv>
+#include <cstring>
 #include <fstream>
 #include <random>
 
@@ -41,10 +42,12 @@ void parseFieldValue(uint8_t* rec, const FieldInfo& f, std::string_view text, Ar
       return;
     }
     case Ty::F64: {
-      double v;
-      auto [p, ec] = std::from_chars(text.data(), text.data() + text.size(), v);
-      if (ec != std::errc() || p != text.data() + text.size())
-        fail(context + ": bad float '" + std::string(text) + "'");
+      // apple libc++ lacks from_chars<double>, so use strtod instead
+      std::string tmp(text);
+      char* end = nullptr;
+      double v = std::strtod(tmp.c_str(), &end);
+      if (tmp.empty() || end != tmp.c_str() + tmp.size())
+        fail(context + ": bad float '" + tmp + "'");
       storeF64(rec, f, v);
       return;
     }
