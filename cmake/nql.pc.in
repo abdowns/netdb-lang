@@ -1,0 +1,5 @@
+Name: nql
+Description: JIT-compiled query language for structured records (C API)
+Version: 0.1.0
+Cflags: -I@NQL_INCLUDE_DIR@
+Libs: -L@NQL_LIB_DIR@ -lnql @NQL_LINK_LIBS@
